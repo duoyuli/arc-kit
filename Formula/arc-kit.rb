@@ -2,16 +2,16 @@ class ArcKit < Formula
   desc "CLI tool for managing coding agent capabilities"
   homepage "https://github.com/duoyuli/arc-kit"
   license "MIT"
-  version "0.1.30"
+  version "2026.4.5"
 
   on_arm do
-    url "https://github.com/duoyuli/arc-kit/releases/download/v0.1.30/arc-kit-aarch64-apple-darwin.tar.gz"
-    sha256 "f70f7b6686d7bb21acf78eab3f9921f3736ff4ba526ac6430914caad8db6fa95"
+    url "https://github.com/duoyuli/arc-kit/releases/download/v2026.4.5/arc-kit-aarch64-apple-darwin.tar.gz"
+    sha256 "77e40e85a4dc29304c99bde6aebab45c14b079bbbe52e0e3c81e4b243e9d815a"
   end
 
   on_intel do
-    url "https://github.com/duoyuli/arc-kit/releases/download/v0.1.30/arc-kit-x86_64-apple-darwin.tar.gz"
-    sha256 "a0ecb88eb37677d813a42515ae5f0d0dcb63a2b31577be888ee95a0a74340497"
+    url "https://github.com/duoyuli/arc-kit/releases/download/v2026.4.5/arc-kit-x86_64-apple-darwin.tar.gz"
+    sha256 "88ffcc6a669415f5c42c092afc37b9d1d2ca5de73bb7dc7e1ec2fce5a2920d1a"
   end
 
   def install
