@@ -1,0 +1,31 @@
+# Claude Code — Provider 配置
+#
+# 每个 [section] 是一个可切换的 provider profile。
+# 切换命令：arc provider use <name>
+#
+# 保留字段：
+#   display_name  显示名称
+#   description   简要描述
+#
+# 其余字段均作为环境变量写入 ~/.claude/settings.json 的 env 中。
+# 常用环境变量：
+#   ANTHROPIC_BASE_URL             API 地址（中转站/国产平替必填）
+#   ANTHROPIC_AUTH_TOKEN           认证令牌（中转站/国产平替必填）
+#   ANTHROPIC_DEFAULT_OPUS_MODEL   覆盖默认 Opus 模型
+#   ANTHROPIC_DEFAULT_SONNET_MODEL 覆盖默认 Sonnet 模型
+#   ANTHROPIC_DEFAULT_HAIKU_MODEL  覆盖默认 Haiku 模型
+
+[official]
+display_name = "Anthropic"
+description = "Anthropic 官方订阅"
+
+# — 示例：自定义代理 —
+#
+# [my-proxy]
+# display_name = "My Proxy"
+# description = "通过中转站访问 Anthropic API"
+# ANTHROPIC_BASE_URL = "https://your-proxy.example.com"
+# ANTHROPIC_AUTH_TOKEN = "sk-ant-xxx"
+# ANTHROPIC_DEFAULT_OPUS_MODEL = ""
+# ANTHROPIC_DEFAULT_SONNET_MODEL = ""
+# ANTHROPIC_DEFAULT_HAIKU_MODEL = ""

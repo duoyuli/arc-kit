@@ -1,0 +1,29 @@
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# arc-cli local state (when developing / running locally)
+.arc-cli/
+
+# Root arc.toml when dogfooding arc against this repo (optional; do not commit local project config)
+/arc.toml
+
+# coding agent
+.claude/
+.codex/
+.cursor/
+.sisyphus/
+.gemini/
+.kimi/
+.opencode/
+.agents/
+
+# build output
+target/

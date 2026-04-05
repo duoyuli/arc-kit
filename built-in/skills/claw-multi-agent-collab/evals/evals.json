@@ -1,0 +1,127 @@
+{
+  "skill_name": "claw-multi-agent-collab",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "今晚要把一份 2026 AI 浏览器市场调研拆给 two、three、four 并行做。我不想听协议摘要，你直接按 OpenClaw 的 leader 方式告诉我现在该建哪些文件、怎么写分派消息、怎么起双 cron。任务 slug 用 `ai-browser-research-2026`，正式同步走飞书群 `oc_9f2a_demo`。",
+      "expected_output": "明确这是 leader 视角，并给出可执行的建盘、分派、cron 和正式广播动作。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 leader，并按行动单输出而不是只解释概念",
+        "使用 ~/.openclaw/tasks/ai-browser-research-2026/ 作为任务目录",
+        "包含 GOALS.md、STATE.yaml、DECISIONS.md、tasks-log.md、artifacts 的建盘要求或模板入口",
+        "给出先 sync 再 trigger 的双 cron 顺序或命令",
+        "给出 sessions_send 分派消息，且输出路径写到 artifacts/<agent>/<taskID>/v1-xxx.md",
+        "强调正式广播走 STATE.yaml.broadcast 指向的飞书群，而不是当前 OpenClaw 会话"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "three 刚把 R2 丢给我，让我做竞品定价对比。我是 follower `two`，先别空谈，按我现在就要开干的顺序告诉我：群里怎么回、日志怎么记、文件写到哪里、什么时候才算 submitted。",
+      "expected_output": "明确这是 follower 视角，并给出接单、日志、产物路径和 submitted 语义。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 follower",
+        "提供接单确认的 IM 群消息模板",
+        "给出 task_log_append.py 的 received、in-progress 或 submitted 命令示例",
+        "指定产物目录结构 artifacts/<名字>/<taskID>/v1-xxx.md",
+        "说明 submitted 只是等待 leader 验收，不等于 done",
+        "强调 GOALS.md、STATE.yaml、DECISIONS.md 只读"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "R2 还挂在 `in-progress`，three 已经 35 分钟没日志，deadline 也过了。你现在站在 leader 视角，别给课程讲义，直接给我排查顺序、催办话术、什么时候该改派或接管。",
+      "expected_output": "给出 leader 异常排查顺序、催办消息、改派或接管阈值。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 leader，且输出包含先后顺序明确的行动单",
+        "先检查 STATE.yaml、tasks-log.md、正式 IM 群或回执证据，而不是直接假设失败",
+        "给出催办或确认用的消息模板",
+        "提供正式异常同步消息格式（【异常】<slug>）",
+        "说明何时改派或接管，并包含 70% 内容已有时 leader 直接补洞的原则"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "我刚验完 three 交的 R2，结论跟证据对不上，格式也没按要求来。我要退回，但不想把旧稿覆盖掉。按 OpenClaw 的正确做法给我回写和通知模板。",
+      "expected_output": "给出 rejected 回写、rejection_note、v2 重做与通知 follower 的模板。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 leader",
+        "说明回写 rejected 时必须填写 rejection_note",
+        "明确要求在 v2 新版本目录重做，不覆盖旧稿",
+        "给出通知 follower 重做的消息模板",
+        "强调 leader 需要先做 spot check 再决定 done 或 rejected"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "我是 four。R3 做到一半发现外部 API 挂了，供应商说两小时后恢复。我现在应该怎么记 blocked、怎么跟 leader 说、哪些事不能自己擅作主张？",
+      "expected_output": "给出 follower 的 blocked 流程、日志命令、通知 leader 的内容和禁止动作。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 follower",
+        "给出写 blocked 日志的脚本命令或关键参数",
+        "要求通知 leader agent，说明卡点、影响和建议",
+        "强调不能自行绕过阻塞或把任务标记为 failed",
+        "说明 blocked 的事实性状态由日志和 cron 回写，后续等待 leader 决策"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "现在巡检提醒发错地方了，一直打到当前 OpenClaw 会话，不在正式飞书群；另外 four 那个分支其实已经做了七成，今晚还要总汇。leader 现在该怎么纠正广播路由、怎么安排补洞、什么时候才能删掉 cron?",
+      "expected_output": "给出 leader 的路由纠偏、补洞收口和最终删 cron 时机。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 leader",
+        "指出正式广播必须走 STATE.yaml.broadcast 的 channel + to，而不是当前会话",
+        "说明错误会话里最多只做解释，不能代替正式播报",
+        "说明需要长时间补洞时应转后台处理或明确 leader 接管，并给 ETA",
+        "强调只有最终整合完成并发出正式【完成】后，才允许删除 cron",
+        "提到删除 cron 后还要用 openclaw cron list 复核 job 已消失"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "所有子任务都 done 了，总汇也写完了。帮我按 OpenClaw 收尾：发完成通知、删 cron、复核。slug 是 `market-map-2026`，飞书群 `oc_3f8b_prod`。",
+      "expected_output": "给出 leader 收尾的完整顺序：发正式【完成】→ 删双 cron → cron list 复核。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 leader",
+        "给出正式【完成】消息模板，目标是 broadcast 指向的飞书群",
+        "强调先发【完成】再删 cron，顺序不可颠倒",
+        "给出 openclaw cron remove 的两条命令",
+        "强调必须用 openclaw cron list 复核双 job 已消失",
+        "提及有价值的决策记录写入 memory"
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "R2 depends_on R1，但 R1 还在 in-progress。老板催着赶紧把 R2 也派出去，我可以先分派吗？按 OpenClaw 规矩给我答案。",
+      "expected_output": "明确不应在依赖未 done 时分派，并给出替代方案。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 leader",
+        "说明 depends_on 中的依赖必须全部 done 才能分派",
+        "引用状态机规则作为依据",
+        "给出替代方案（例如催促 R1、评估是否可以解除依赖、调整任务边界等）",
+        "不建议绕过依赖检查直接分派"
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "patrol-sync cron 创建成功了，但 patrol-trigger 创建失败，报了个权限错误。我已经把任务发出去了，现在怎么办？能发开工吗？",
+      "expected_output": "明确不能发开工，给出排障和补救步骤。",
+      "files": [],
+      "expectations": [
+        "明确当前角色是 leader",
+        "强调双 cron 未全部成功，禁止发【开工】",
+        "说明当前任务视为未正式开工",
+        "给出排障步骤（检查权限、重试 trigger cron）",
+        "建议先发"未开工/受阻"同步说明原因",
+        "提到补齐 cron 后才能正式推进"
+      ]
+    }
+  ]
+}

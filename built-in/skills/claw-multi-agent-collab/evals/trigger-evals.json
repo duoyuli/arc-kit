@@ -1,0 +1,74 @@
+[
+  {
+    "query": "今晚要把 `agent-browser-scan` 这个活拆给 two、three、four 并行做，帮我按 OpenClaw 先起盘、写分派消息、把正式同步挂到飞书群 `oc_82ab_demo`，然后把双 cron 也补上。",
+    "should_trigger": true
+  },
+  {
+    "query": "three 30 多分钟没更新 tasks-log，R2 还挂 in-progress，deadline 已经过了。你站在 leader 视角直接告诉我现在怎么查、怎么催、什么时候改派。",
+    "should_trigger": true
+  },
+  {
+    "query": "我是 follower two，刚收到 R1，要去做竞品价格扫描。按 OpenClaw 的规矩，我第一条群消息怎么发，日志命令怎么写，产物应该放哪儿？",
+    "should_trigger": true
+  },
+  {
+    "query": "双 cron 还没建好，但我已经把任务发出去了。现在是不是还不能发【开工】？按 protocol 给我补救顺序。",
+    "should_trigger": true
+  },
+  {
+    "query": "R2 已经 submitted 了，但我抽查发现证据不够。帮我按 OpenClaw 的 leader 口径写 rejected、rejection_note 和让 three 出 v2 的通知。",
+    "should_trigger": true
+  },
+  {
+    "query": "巡检提醒被发到当前 OpenClaw 会话，不在正式飞书群。我要把播报纠正回 STATE 里的群路由，顺便别让现在这个会话继续冒充正式同步。",
+    "should_trigger": true
+  },
+  {
+    "query": "four 这条线挂了，不过内容已经有七成。今晚必须交付，leader 现在该直接补洞还是先改派？也给我一条对群同步的话术。",
+    "should_trigger": true
+  },
+  {
+    "query": "帮我看看 `~/.openclaw/tasks/market-map-2026/STATE.yaml` 现在该不该回写 done；如果已经都收口了，再告诉我 cron 什么时候才能删。",
+    "should_trigger": true
+  },
+  {
+    "query": "我想让几个 agent 分头做访谈整理、竞品对比、定价分析，最后我来验收。你给我一个 OpenClaw leader 的执行单，不要泛泛讲团队协作。",
+    "should_trigger": true
+  },
+  {
+    "query": "帮我设计一个支持 leader / follower 模式的多 agent 平台，最好带数据库表结构和消息队列选型。",
+    "should_trigger": false
+  },
+  {
+    "query": "three 把 PR 卡住了，你帮我 review 一下为什么 CI 一直没过，顺便给我修掉。",
+    "should_trigger": false
+  },
+  {
+    "query": "帮我写个 cron 表达式，每 5 分钟把日志同步到 S3，然后告诉我怎么部署到服务器。",
+    "should_trigger": false
+  },
+  {
+    "query": "我想做一个团队协作看板，列出负责人、状态、deadline 和 blockers，最好能给个 Notion 模板。",
+    "should_trigger": false
+  },
+  {
+    "query": "我收到了老板派给我的市场调研任务，但不是 agent 任务流。怎么跟领导汇报进度会更稳一点？",
+    "should_trigger": false
+  },
+  {
+    "query": "帮我检查这个 YAML schema 有没有缩进错误，另外顺手把字段名字统一成 snake_case。",
+    "should_trigger": false
+  },
+  {
+    "query": "把 Slack 的正式通知切到飞书群机器人，别再发到当前聊天窗口了。我只需要一份机器人配置说明。",
+    "should_trigger": false
+  },
+  {
+    "query": "我想把一个大需求拆成 3 个技术任务写到 Jira，每个任务配上 owner、deadline 和验收标准。",
+    "should_trigger": false
+  },
+  {
+    "query": "给我总结一下 leader 和 follower 在组织管理里的差异，顺手举两个互联网团队的例子。",
+    "should_trigger": false
+  }
+]

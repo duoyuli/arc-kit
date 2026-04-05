@@ -1,0 +1,22 @@
+# Codex — Provider 配置
+#
+# 每个 [section] 是一个可切换的 provider profile。
+# 切换命令：arc provider use <name>
+#
+# 可用字段：
+#   display_name  显示名称
+#   description   简要描述
+#   base_url      API 地址（中转站必填）
+#   api_key       OpenAI API Key（中转站必填）
+
+[official]
+display_name = "OpenAI"
+description = "OpenAI 官方订阅"
+
+# — 示例：自定义代理 —
+#
+# [my-proxy]
+# display_name = "My Proxy"
+# description = "通过中转站访问 OpenAI API"
+# base_url = "https://your-proxy.example.com"
+# api_key = "sk-xxx"

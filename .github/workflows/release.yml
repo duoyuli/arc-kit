@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build (aarch64)
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build (x86_64)
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Package
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            tar czf "arc-kit-${target}.tar.gz" -C "target/${target}/release" arc
+          done
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "$GITHUB_REF_NAME" arc-kit-*.tar.gz \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew formula
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA_ARM="$(shasum -a 256 arc-kit-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)"
+          SHA_X86="$(shasum -a 256 arc-kit-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)"
+
+          git fetch origin main
+          git checkout -b formula-update origin/main
+
+          if grep -q "version \"${VERSION}\"" Formula/arc-kit.rb 2>/dev/null; then
+            echo "Formula already at version ${VERSION}, skipping"
+            exit 0
+          fi
+
+          mkdir -p Formula
+          cat > Formula/arc-kit.rb << FORMULA
+          class ArcKit < Formula
+            desc "CLI tool for managing coding agent capabilities"
+            homepage "https://github.com/duoyuli/arc-kit"
+            license "MIT"
+            version "${VERSION}"
+
+            on_arm do
+              url "https://github.com/duoyuli/arc-kit/releases/download/v${VERSION}/arc-kit-aarch64-apple-darwin.tar.gz"
+              sha256 "${SHA_ARM}"
+            end
+
+            on_intel do
+              url "https://github.com/duoyuli/arc-kit/releases/download/v${VERSION}/arc-kit-x86_64-apple-darwin.tar.gz"
+              sha256 "${SHA_X86}"
+            end
+
+            def install
+              bin.install "arc"
+            end
+
+            test do
+              system bin/"arc", "version"
+            end
+          end
+          FORMULA
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/arc-kit.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "formula: arc-kit ${VERSION}"
+            git push origin formula-update:main
+          fi
