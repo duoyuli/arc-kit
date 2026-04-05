@@ -1,368 +1,211 @@
-use std::collections::BTreeMap;
 use std::env;
-use std::io::{self, IsTerminal};
 
-use arc_core::detect::{CODING_AGENTS, DetectCache, coding_agent_spec};
-use arc_core::engine::InstalledResource;
+use arc_core::detect::CODING_AGENTS;
 use arc_core::error::ArcError;
-use arc_core::models::ResourceKind;
-use arc_core::project::{EffectiveConfig, resolve_effective_config};
-use arc_core::provider::{
-    load_providers_for_agent, read_active_provider, supported_provider_agents,
-};
-use arc_core::skill::SkillRegistry;
-use arc_core::{ArcPaths, InstallEngine};
-use console::{Alignment, measure_text_width, pad_str, style};
+use arc_core::status::{ProjectState, ProviderMatchState, StatusSnapshot};
+use arc_core::{ArcPaths, DetectCache, collect_status};
+use console::{Alignment, pad_str, style};
 
 use crate::cli::OutputFormat;
-use crate::display::agent_display_name;
-use crate::format::{AgentStatus, MarketsSummary, SCHEMA_VERSION, StatusOutput, print_json};
+use crate::format::{SCHEMA_VERSION, StatusOutput, print_json};
 
 pub fn run(paths: &ArcPaths, cache: &DetectCache, fmt: &OutputFormat) -> Result<(), ArcError> {
-    let agents = cache.detected_agents();
-    let engine = InstallEngine::new(cache.clone());
-    let installed = engine.list_installed(None);
-    let skill_counts = count_skills_by_agent(&installed);
-    let providers_dir = paths.providers_dir();
-    let provider_agents: Vec<&str> = supported_provider_agents();
+    let cwd = env::current_dir().unwrap_or_default();
+    let snapshot = collect_status(paths, &cwd, cache);
 
-    let mut active_providers: BTreeMap<String, String> = BTreeMap::new();
-    let mut active_provider_names: BTreeMap<String, String> = BTreeMap::new();
-    for agent in &provider_agents {
-        if let Some(active_name) = read_active_provider(&providers_dir, agent) {
-            let providers = load_providers_for_agent(&providers_dir, agent);
-            if let Some(p) = providers.iter().find(|p| p.name == active_name) {
-                active_providers.insert(agent.to_string(), p.display_name.clone());
-                active_provider_names.insert(agent.to_string(), p.name.clone());
-            }
-        }
-    }
-
-    // ── JSON output ───────────────────────────────────────
     if *fmt == OutputFormat::Json {
-        let cwd = env::current_dir().unwrap_or_default();
-        let registry = SkillRegistry::new(paths.clone(), cache.clone());
-        let effective = resolve_effective_config(paths, &cwd, cache, &registry).ok();
-
-        let registry2 = arc_core::market::sources::MarketSourceRegistry::new(paths.clone());
-        let sources = registry2.list_all();
-        let total_resources: usize = sources.iter().map(|s| s.resource_count).sum();
-
-        let agent_list: Vec<AgentStatus> = agents
-            .iter()
-            .map(|(agent_id, info)| {
-                let name = coding_agent_spec(agent_id)
-                    .map(|s| s.display_name.to_string())
-                    .unwrap_or_else(|| agent_id.clone());
-                let count = skill_counts.get(agent_id.as_str()).copied().unwrap_or(0);
-                AgentStatus {
-                    id: agent_id.clone(),
-                    name,
-                    version: info.version.clone(),
-                    provider: active_provider_names.get(agent_id).cloned(),
-                    skill_count: count,
-                }
-            })
-            .collect();
-
-        let project = effective.and_then(|eff| {
-            eff.config_path.as_ref()?;
-            Some(crate::format::ProjectStatus {
-                name: eff.project_name.clone(),
-                config_path: eff.config_path.as_ref().map(|p| p.display().to_string()),
-                required_skills: eff.required_skills.clone(),
-                installed_skills: eff.installed_skills.clone(),
-                missing_skills: eff.missing_installable.clone(),
-                unavailable_skills: eff.missing_unavailable.clone(),
-            })
-        });
-
         print_json(&StatusOutput {
             schema_version: SCHEMA_VERSION,
-            agents: agent_list,
-            markets: MarketsSummary {
-                count: sources.len(),
-                resource_count: total_resources,
-            },
-            installed_skills: installed.len(),
-            project,
+            project: snapshot.project,
+            agents: snapshot.agents,
+            catalog: snapshot.catalog,
+            actions: snapshot.actions,
         })?;
         return Ok(());
     }
 
-    if agents.is_empty() {
-        println!(
-            "  {} {}",
-            style("!").yellow(),
-            style("No coding agents detected.").yellow()
-        );
-        println!();
-        let names: Vec<&str> = CODING_AGENTS.iter().map(|s| s.display_name).collect();
-        println!(
-            "  {}  {}",
-            style("Hint:").dim(),
-            style(format!(
-                "Install a supported agent to get started: {}",
-                names.join(", ")
-            ))
-            .dim()
-        );
-        println!();
-        return Ok(());
-    }
+    render_text(&snapshot);
+    Ok(())
+}
 
-    // ── Project context ───────────────────────────────────────
+fn render_text(snapshot: &StatusSnapshot) {
+    render_project(&snapshot.project);
+    println!();
+    render_agents(snapshot);
+    println!();
+    render_catalog(snapshot);
+    println!();
+}
 
-    let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-    let cwd = env::current_dir().unwrap_or_default();
-    let registry = SkillRegistry::new(paths.clone(), cache.clone());
-    let effective = resolve_effective_config(paths, &cwd, cache, &registry).ok();
+fn render_project(project: &arc_core::status::ProjectStatusSection) {
+    println!("{}", style("Project").bold());
 
-    let mut missing_skill_action_taken = false;
-    let mut exit_code_1 = false;
-
-    if let Some(ref eff) = effective
-        && eff.config_path.is_some()
-    {
-        render_project_box(eff);
-
-        if !is_tty {
-            // Non-interactive: set exit code 1 if missing installable skills.
-            if !eff.missing_installable.is_empty() {
-                exit_code_1 = true;
+    match project.state {
+        ProjectState::None => {
+            println!("  arc.toml: not found");
+        }
+        ProjectState::Invalid => {
+            if let Some(path) = &project.config_path {
+                println!("  config: {}", path.display());
             }
-        } else {
-            // Interactive: offer to install missing skills.
-            if !eff.missing_installable.is_empty() {
-                println!();
-                let label = if eff.missing_installable.len() == 1 {
-                    format!("Required skill missing: {}", eff.missing_installable[0])
-                } else {
-                    format!(
-                        "Required skills missing: {}",
-                        eff.missing_installable.join(", ")
-                    )
-                };
-                println!("  {}", style(&label).yellow());
-                let ok = arc_tui::confirm("Install now?", true).unwrap_or(false);
-                if ok {
-                    install_missing(paths, cache, &registry, eff)?;
-                    missing_skill_action_taken = true;
+            if let Some(error) = &project.error {
+                println!("  error: {error}");
+            }
+        }
+        ProjectState::Active => {
+            println!("  repo: {}", project.name);
+            if let Some(path) = &project.config_path {
+                println!("  config: {}", path.display());
+            }
+            if let Some(summary) = &project.summary {
+                println!(
+                    "  skills: {} required · {} ready · {} partial · {} missing · {} unavailable",
+                    summary.required_skills,
+                    summary.ready_skills,
+                    summary.partial_skills,
+                    summary.missing_skills,
+                    summary.unavailable_skills,
+                );
+            }
+            if let Some(provider) = &project.provider {
+                let mut parts = vec![format!("provider {}", provider.name)];
+                if provider.matched_agents > 0 {
+                    parts.push(format!("{} matched", provider.matched_agents));
                 }
+                if provider.mismatched_agents > 0 {
+                    parts.push(format!("{} mismatch", provider.mismatched_agents));
+                }
+                if provider.missing_profiles > 0 {
+                    parts.push(format!("{} missing profile", provider.missing_profiles));
+                }
+                println!("  {}", parts.join(" · "));
+            }
+
+            if !project.agents.is_empty() {
+                println!("  targets:");
+                let name_width = project
+                    .agents
+                    .iter()
+                    .map(|agent| agent.name.len())
+                    .max()
+                    .unwrap_or(0);
+                for agent in &project.agents {
+                    let provider_label = agent
+                        .provider_status
+                        .as_ref()
+                        .map(render_provider_status)
+                        .unwrap_or_default();
+                    if provider_label.is_empty() {
+                        println!(
+                            "    {}  {}/{} ready",
+                            pad_str(&agent.name, name_width, Alignment::Left, None),
+                            agent.ready_skill_count,
+                            agent.total_available_skill_count
+                        );
+                    } else {
+                        println!(
+                            "    {}  {}/{} ready  {}",
+                            pad_str(&agent.name, name_width, Alignment::Left, None),
+                            agent.ready_skill_count,
+                            agent.total_available_skill_count,
+                            provider_label
+                        );
+                    }
+                }
+            } else if project
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.required_skills > 0)
+            {
+                println!("  targets: no detected agent currently supports project-local skills");
             }
         }
     }
+}
 
-    // ── Agent table ───────────────────────────────────────────
+fn render_agents(snapshot: &StatusSnapshot) {
+    println!("{}", style("Agents").bold());
 
-    let name_width = agents
-        .keys()
-        .filter_map(|id| coding_agent_spec(id))
-        .map(|s| measure_text_width(s.display_name))
-        .max()
-        .unwrap_or(10);
-    let ver_width = agents
-        .values()
-        .filter_map(|info| info.version.as_ref())
-        .map(|v| measure_text_width(v))
+    if snapshot.agents.is_empty() {
+        println!("  none detected");
+        let names: Vec<&str> = CODING_AGENTS
+            .iter()
+            .map(|agent| agent.display_name)
+            .collect();
+        println!("  hint: install a supported agent: {}", names.join(", "));
+        return;
+    }
+
+    let name_width = snapshot
+        .agents
+        .iter()
+        .map(|agent| agent.name.len())
         .max()
         .unwrap_or(0);
-    let provider_width = active_providers
-        .values()
-        .map(|v| measure_text_width(v))
+    let version_width = snapshot
+        .agents
+        .iter()
+        .map(|agent| agent.version.as_deref().unwrap_or("-").len())
         .max()
-        .unwrap_or(0);
+        .unwrap_or(1);
+    let provider_width = snapshot
+        .agents
+        .iter()
+        .map(|agent| {
+            agent
+                .provider
+                .as_ref()
+                .map(|provider| provider.display_name.len())
+                .unwrap_or(1)
+        })
+        .max()
+        .unwrap_or(1);
 
-    println!();
-    for (agent_id, info) in agents {
-        let display = coding_agent_spec(agent_id)
-            .map(|s| s.display_name)
-            .unwrap_or(agent_id);
-        let count = skill_counts.get(agent_id.as_str()).copied().unwrap_or(0);
-
-        let ver_str = info
-            .version
-            .as_deref()
-            .map(|v| pad_str(v, ver_width, Alignment::Left, None).into_owned())
-            .unwrap_or_else(|| " ".repeat(ver_width));
-
-        let provider_str = active_providers
-            .get(agent_id)
-            .map(|name| pad_str(name, provider_width, Alignment::Left, None).into_owned())
-            .unwrap_or_else(|| " ".repeat(provider_width));
-
-        let skill_label = if count == 1 { "skill" } else { "skills" };
-
+    for agent in &snapshot.agents {
+        let version = agent.version.as_deref().unwrap_or("-");
+        let provider = agent
+            .provider
+            .as_ref()
+            .map(|item| item.display_name.as_str())
+            .unwrap_or("-");
+        let project_local = if agent.supports_project_skills {
+            "project-local"
+        } else {
+            "global-only"
+        };
         println!(
-            "  {}  {}  {}  {} {}",
-            pad_str(display, name_width, Alignment::Left, None),
-            style(&ver_str).dim(),
-            style(&provider_str).cyan(),
-            count,
-            style(skill_label).dim(),
+            "  {}  {}  {}  {} global skills  {}",
+            pad_str(&agent.name, name_width, Alignment::Left, None),
+            style(pad_str(version, version_width, Alignment::Left, None)).dim(),
+            style(pad_str(provider, provider_width, Alignment::Left, None)).cyan(),
+            agent.global_skill_count,
+            style(project_local).dim(),
         );
     }
-    println!();
+}
 
-    let registry2 = arc_core::market::sources::MarketSourceRegistry::new(paths.clone());
-    let sources = registry2.list_all();
-    let total_resources: usize = sources.iter().map(|s| s.resource_count).sum();
-    let total_installed = installed.len();
-
-    let skill_label = if total_installed == 1 {
-        "skill"
-    } else {
-        "skills"
-    };
+fn render_catalog(snapshot: &StatusSnapshot) {
+    println!("{}", style("Catalog").bold());
     println!(
-        "  {} · {} · {} {} installed",
-        style(format!("{} markets", sources.len())).dim(),
-        style(format!("{} resources", total_resources)).dim(),
-        total_installed,
-        style(skill_label).dim(),
+        "  {} markets · {} resources · {} global skills",
+        snapshot.catalog.market_count,
+        snapshot.catalog.resource_count,
+        snapshot.catalog.global_skill_count,
     );
-    println!();
-
-    // If non-interactive and missing skills, exit with code 1.
-    if exit_code_1 {
-        return Err(ArcError::with_hint(
-            "Missing required skills.".to_string(),
-            "Run `arc project apply` to install missing skills.".to_string(),
-        ));
-    }
-
-    // If user declined interactive install, show hint.
-    if is_tty
-        && let Some(ref eff) = effective
-        && eff.config_path.is_some()
-        && !missing_skill_action_taken
-        && !eff.missing_installable.is_empty()
-    {
+    if snapshot.catalog.unhealthy_market_count > 0 {
         println!(
-            "  {}",
-            style("Run `arc project apply` to install missing skills.").dim()
-        );
-        println!();
-    }
-
-    Ok(())
-}
-
-// ── Project context box ───────────────────────────────────
-
-fn render_project_box(eff: &EffectiveConfig) {
-    let total = eff.required_skills.len();
-    let installed = eff.installed_skills.len();
-    let missing = eff.missing_installable.len();
-    let unavailable = eff.missing_unavailable.len();
-
-    println!();
-    println!("  ┌ {}", style(&eff.project_name).bold());
-
-    if total > 0 {
-        if missing == 0 && unavailable == 0 {
-            println!(
-                "  │ skills   {} required, {} installed {}",
-                total,
-                installed,
-                style("✓").green()
-            );
-        } else if missing == 0 && unavailable > 0 {
-            println!(
-                "  │ skills   {} required, {} installed, {} unavailable",
-                total,
-                installed,
-                style(unavailable.to_string()).dim()
-            );
-        } else {
-            println!(
-                "  │ skills   {} required, {} installed, {} missing",
-                total,
-                installed,
-                style(missing.to_string()).yellow()
-            );
-        }
-    }
-
-    if total > 0 {
-        println!(
-            "  │ {}",
-            style("Required skills are materialized in this repo for supported agents (e.g. .claude/skills; OpenClaw has no project-level path — use `arc skill install` globally).")
-                .dim()
+            "  warning: {} markets report a non-ok status",
+            snapshot.catalog.unhealthy_market_count
         );
     }
-
-    println!("  └");
 }
 
-// ── Helpers ───────────────────────────────────────────────
-
-fn install_missing(
-    _paths: &ArcPaths,
-    cache: &DetectCache,
-    registry: &SkillRegistry,
-    eff: &EffectiveConfig,
-) -> Result<(), ArcError> {
-    let Some(project_root) = eff.project_root.as_ref() else {
-        return Ok(());
-    };
-    let engine = InstallEngine::new(cache.clone());
-    let targets = cache.agents_for_project_skill_install(&ResourceKind::Skill);
-    for name in &eff.missing_installable {
-        let Some(skill) = registry.find(name) else {
-            continue;
-        };
-        let source_path = match registry.resolve_source_path(&skill) {
-            Ok(p) => p,
-            Err(e) => {
-                println!(
-                    "  {} {} — {}",
-                    style("✗").red(),
-                    name,
-                    style(&e.message).dim()
-                );
-                continue;
-            }
-        };
-        match engine.install_named_project(
-            name,
-            &ResourceKind::Skill,
-            &source_path,
-            project_root,
-            &targets,
-        ) {
-            Ok(installed) => {
-                for agent in &installed {
-                    println!(
-                        "  {} {} → {} (project)",
-                        style("✓").green(),
-                        style(name).bold(),
-                        agent_display_name(agent)
-                    );
-                }
-            }
-            Err(e) => {
-                println!(
-                    "  {} {} — {}",
-                    style("✗").red(),
-                    name,
-                    style(&e.message).dim()
-                );
-            }
+fn render_provider_status(status: &arc_core::status::ProjectProviderAgentStatus) -> String {
+    match status.state {
+        ProviderMatchState::Matched => style("provider matched").green().to_string(),
+        ProviderMatchState::Mismatch => style("provider mismatch").yellow().to_string(),
+        ProviderMatchState::MissingProfile => {
+            style("provider profile missing").yellow().to_string()
         }
     }
-    Ok(())
-}
-
-fn count_skills_by_agent(items: &[InstalledResource]) -> BTreeMap<String, usize> {
-    let mut counts = BTreeMap::new();
-    for item in items {
-        if item.kind.as_str() != "skill" {
-            continue;
-        }
-        for target in &item.targets {
-            *counts.entry(target.clone()).or_insert(0) += 1;
-        }
-    }
-    counts
 }

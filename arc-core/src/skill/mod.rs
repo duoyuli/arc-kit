@@ -3,6 +3,7 @@ pub mod local;
 pub mod merge;
 pub mod registry;
 mod sync;
+pub mod tracking;
 
 pub use registry::SkillRegistry;
 pub use sync::{

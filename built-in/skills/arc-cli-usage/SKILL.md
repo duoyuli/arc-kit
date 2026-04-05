@@ -16,7 +16,10 @@ description: >
 ## 对 Agent 的指引
 
 - **权威文档**：行为与边界情况以仓库内 `docs/user/guide.md` 为准；本 skill 是速查。交互/自动化语义另见 `docs/developer/design.md`。
-- 用户若在**非 TTY / CI** 下操作，提醒为写入类命令提供**显式参数**，并可用 `--format json` 做稳定解析（例外见下文）。
+- **先看状态再写入**：排查时优先跑 `arc status`、`arc provider`、`arc skill list --installed`、`arc market list`，不要先假设问题在某一个子系统。
+- **不要把裸 `arc` 当成 `status`**：`arc` 等同于 `arc --help`。
+- 用户若在**非 TTY / CI** 下操作，提醒为写入类命令提供**显式参数**，并优先配合 `--format json`；对写入类 JSON，除了退出码，还要检查 `ok`。
+- 若本 skill 与实际行为冲突，以本仓库代码和 `docs/user/guide.md` 为准；尤其关注 `project apply` / `project edit` 的 JSON 和退出码语义。
 
 ## 安装
 
@@ -68,7 +71,7 @@ arc skill install       交互式；或 arc skill install <name> [-a|--agent …
 arc skill uninstall …   [-a|--agent …] 或 --all
 arc skill info <name>   详情（skill 不存在时 --format json 可能无 JSON 直接报错，见用户手册）
 
-arc project apply       无 arc.toml：交互下向导创建并应用；**非交互且无 arc.toml** 会失败（见用户手册）。有 arc.toml：按配置安装 skill、切换 provider
+arc project apply       [--agent <id> ... | --all-agents]；无 arc.toml 时交互下可创建；有 arc.toml 时按配置安装 skill、切换 provider
 arc project edit        交互式编辑 [skills] require
 ```
 
@@ -76,10 +79,28 @@ arc project edit        交互式编辑 [skills] require
 
 **自动化约定**：只读类应支持 `--format json`；带向导的写入类须提供显式参数，以便脚本/CI 在非 TTY 下一键执行。详见 `docs/developer/design.md`。
 
+## Agent 常用调用
+
+```bash
+arc status --format json
+arc provider --format json
+arc provider test --format json
+arc skill list --installed --format json
+arc skill info <name> --format json
+arc market list --format json
+arc project apply --format json --agent codex
+```
+
+- 用户说“怎么没生效”时，先看 `arc status`，再按 provider / skill / market 分拆定位。
+- 用户说“脚本里要稳定解析”时，优先 `--format json`；`arc version` 例外，仅文本。
+- 用户说“帮我装到某个 agent”时，优先显式传 `--agent`，不要依赖自动目标推断。
+
 ### 退出码提示（脚本）
 
-- `arc status`：非交互下若 `arc.toml` 中 required skill 缺失且可装，可能以 **1** 退出。
+- `arc status`：只读；缺失 skill 时仍为 **0**，输出中可见提示。
 - `arc provider test`：任一受测项失败则 **1**（含 JSON 模式）。
+- `arc project apply`：错误场景并不都靠退出码表达；`--format json` 下可能 **exit 0 但 `ok: false`**。
+- `arc project edit`：`--format json` 下返回 `ok: false`，但不执行编辑。
 
 ## Provider
 
@@ -113,7 +134,6 @@ display_name = "Mirror"
 description = "Third-party proxy"
 api_key = "sk-xxx"
 base_url = "https://proxy.example.com"
-wire_api = "responses"
 
 [openai]
 display_name = "OpenAI Official"
@@ -123,17 +143,22 @@ api_key = "sk-xxx"
 - 有 `base_url` 时写入 `~/.codex/config.toml` 的 `model_provider` + `model_providers.<name>`
 - 无 `base_url` 时清除 `model_provider`（回到官方直连）
 - `api_key` 写入 `~/.codex/auth.json`
+- 当前切换逻辑只实际消费 `api_key` / `base_url`；不要把额外字段当成已生效配置。
 
 ### 切换与探测
 
 ```bash
 arc provider                     # 同 list：列出 providers（只读），按 Agent 分组展示
-arc provider use               # 交互式选择要切换的 provider
+arc provider use                 # 交互式选择要切换的 provider
 arc provider use mirror          # 名称唯一时自动识别 agent
 arc provider use mirror -a claude
 arc provider test                # 测试各 agent **当前激活的** provider（无激活则提示后成功退出）
 arc provider test mirror --agent claude
 ```
+
+- 非交互模式下，`arc provider use` 必须给 `<name>`。
+- 若同名 provider 同时存在于多个 agent，`arc provider use <name>` 会报歧义，需补 `--agent`。
+- `arc provider test --agent <agent>` 在该 agent **没有 active provider** 时会报错；不带参数时则只测试“所有已激活”的 provider，没有激活项时成功退出。
 
 ## Skill
 
@@ -149,7 +174,7 @@ arc provider test mirror --agent claude
 
 ### 安装机制
 
-Skill 默认通过**软链接**安装到各 coding agent 的 skills 目录；**OpenClaw**（`~/.openclaw/skills/`）为**目录复制**。**Cursor** 全局安装目录为 `~/.cursor/skills-cursor/<name>/`（项目内路径仍为 `.cursor/skills/<name>/`）。`arc market update` 重建 catalog 后会按 registry 维护全局安装（删除已消失的、重装仍存在的）。也可手动 `arc skill install <name> -a <agent>`。
+Skill 默认通过**软链接**安装到各 coding agent 的 skills 目录；**OpenClaw**（`~/.openclaw/skills/`）为**目录复制**。**Cursor** 全局安装目录为 `~/.cursor/skills-cursor/<name>/`（项目内路径仍为 `.cursor/skills/<name>/`）。`arc market update` 重建 catalog 后会按 registry 维护 **arc 已追踪** 的全局安装（删除已消失的、仅在目标落后时刷新）。也可手动 `arc skill install <name> -a <agent>`。
 
 ```bash
 arc skill list --installed
@@ -160,6 +185,11 @@ arc skill install my-skill -a claude -a codex
 arc skill uninstall my-skill --all
 arc skill uninstall my-skill -a claude
 ```
+
+- 非交互模式下，`install` / `uninstall` 都必须给 skill 名。
+- `arc skill install <name>` 未传 `--agent` 时，会安装到默认目标集合；给 agent 执行时，优先显式传 `--agent` 以避免装得过宽。
+- `arc skill uninstall <name>` 未传 `--agent` 且未传 `--all` 时，会按“当前已安装目标”移除；若本来没装，会返回成功语义并提示 `not installed`。
+- `arc skill info <name> --format json` 在 skill 不存在时，当前实现会直接报错，stdout 不保证有 JSON。
 
 ### 项目级 vs 全局（`arc project apply`）
 
@@ -176,7 +206,7 @@ arc skill uninstall my-skill -a claude
 
 ## Market
 
-Market 源是包含 skill 的 git 仓库。
+Market 源是包含 skill 的 git 仓库。裸 `arc market` 等同于 `arc market list`。
 
 ```bash
 arc market add https://github.com/example/skills.git
@@ -186,6 +216,36 @@ arc market update                  # 拉取并重新扫描；并维护全局 ski
 ```
 
 首次运行 `arc skill list` 时，若无本地 catalog，会自动从内置索引引导初始 market 源。
+
+- `arc market add` 仅接受合法 git URL；当前允许 `https://`、`git://`、`ssh://`、`git@`、`file://`。
+- `arc market remove` 只移除 market 源与 catalog 记录，**不会卸载**已装到各 agent 的 skill。
+- `arc market update` 除了刷新索引，还会按当前 registry 自动清理失效的全局安装，并重装仍存在的全局 skill 到最新解析路径。
+
+## Project Flow
+
+`arc project apply` 会从当前目录向上查找最近的 `arc.toml`。对 agent 而言，最重要的是区分“交互创建配置”和“非交互应用配置”：
+
+- 交互式且无 `arc.toml`：可以直接 `arc project apply`，会进入向导创建并应用。
+- 非交互且无 `arc.toml`：纯文本路径报错；JSON 路径返回 `WriteResult` 且 `ok: false`。
+- 已有 `arc.toml` 且存在缺失 skill：交互式可选目标 agent；非交互必须传 `--agent <id>`（可重复）或 `--all-agents`。
+- `--agent` 与 `--all-agents` 互斥。
+- `[[markets]]` 中声明但本地尚未配置的源，会在 `arc project apply` 时自动补到本地 market 配置。
+- `arc project edit` 仅交互式；若用户在 CI、管道或 JSON 模式下要求编辑，应改为直接修改 `arc.toml` 文件，而不是调用该命令。
+
+## 排障速查
+
+```bash
+arc status
+arc provider
+arc provider test
+arc skill list --installed
+arc market list
+```
+
+- “provider 切了但没生效”：先看 `arc provider` 当前 active，再检查 `~/.claude/settings.json` 或 `~/.codex/config.toml` / `~/.codex/auth.json`。
+- “skill 找得到但项目里没加载”：先看 `arc status` 的 project 区块，再执行 `arc project apply --agent <id>`。
+- “market 删了怎么 skill 还在”：这是正常行为；`arc market remove` 不会卸载已安装 skill。
+- “脚本里返回 0 但结果不对”：优先检查 JSON 的 `ok` / `items`，尤其是 `project apply` 与 `project edit`。
 
 ## 关键路径
 

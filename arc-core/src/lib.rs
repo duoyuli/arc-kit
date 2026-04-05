@@ -11,6 +11,7 @@ pub mod paths;
 pub mod project;
 pub mod provider;
 pub mod skill;
+pub mod status;
 
 // Re-exports for convenience.
 // Prefer module-scoped access (e.g. `arc_core::models::SkillEntry`) for new code;
@@ -30,3 +31,4 @@ pub use skill::{
     GlobalSkillCleanupReport, GlobalSkillMaintenanceReport, InstalledSkillSyncFailure,
     InstalledSkillSyncReport, SkillRegistry, run_global_skill_maintenance,
 };
+pub use status::collect_status;

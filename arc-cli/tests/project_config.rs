@@ -25,7 +25,7 @@ fn arc_project_apply_json_noninteractive_no_arc_toml() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert_eq!(json["schema_version"], "1");
+    assert_eq!(json["schema_version"], "3");
     assert_eq!(json["ok"], false);
 }
 
@@ -279,8 +279,12 @@ fn arc_status_shows_project_context() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("required") || stdout.contains("skill"),
-        "expected project context box, got: {stdout}"
+        stdout.contains("Project")
+            && stdout.contains("Agents")
+            && stdout.contains("Catalog")
+            && stdout.contains("repo:")
+            && stdout.contains("skills:"),
+        "expected modular status output, got: {stdout}"
     );
 }
 
@@ -299,13 +303,13 @@ fn arc_status_no_change_without_arc_toml() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !stdout.contains("required") || !stdout.contains("arc.toml"),
-        "should not show project box without arc.toml"
+        stdout.contains("Project") && stdout.contains("arc.toml: not found"),
+        "expected explicit no-project section, got: {stdout}"
     );
 }
 
 #[test]
-fn arc_status_noninteractive_exits_1_on_missing_skills() {
+fn arc_status_noninteractive_succeeds_with_missing_skills_reminder() {
     let temp = tempfile::tempdir().unwrap();
     let proj = tempfile::tempdir().unwrap();
 
@@ -327,10 +331,60 @@ fn arc_status_noninteractive_exits_1_on_missing_skills() {
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
 
+    assert!(
+        output.status.success(),
+        "status is read-only; missing skills must not change exit code"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("required") || output.status.success(),
-        "expected some output, got: {stdout}"
+        stdout.contains("skills: 1 required") && stdout.contains("1 unavailable"),
+        "expected project summary reminder, got: {stdout}"
+    );
+}
+
+#[test]
+fn arc_status_json_exposes_project_agents_and_catalog_modules() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+
+    fs::write(proj.path().join("arc.toml"), "[skills]\nrequire = []\n").unwrap();
+
+    let output = arc_cmd()
+        .args(["status", "--format", "json"])
+        .env("ARC_KIT_USER_HOME", temp.path())
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["schema_version"], "3");
+    assert_eq!(json["project"]["state"], "active");
+    assert!(json.get("agents").is_some());
+    assert!(json.get("catalog").is_some());
+    assert!(json.get("actions").is_some());
+}
+
+#[test]
+fn arc_status_surfaces_invalid_arc_toml() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+
+    fs::write(proj.path().join("arc.toml"), "api_key = \"secret\"\n").unwrap();
+
+    let output = arc_cmd()
+        .arg("status")
+        .env("ARC_KIT_USER_HOME", temp.path())
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("error:") && stdout.contains("unknown field"),
+        "expected invalid project details, got: {stdout}"
     );
 }
 

@@ -72,9 +72,10 @@ pub fn edit_arc_toml_interactive(
 
     cfg.skills.require = selected_names.clone();
 
-    // Collect markets for selected skills and merge with existing
+    // Keep unrelated existing markets, but resync the markets implied by skill selection.
+    let previous_markets = collect_markets_for_skills(paths, &all_skills, &preselected);
     let new_markets = collect_markets_for_skills(paths, &all_skills, &selected_names);
-    cfg.markets = merge_markets(cfg.markets, new_markets);
+    cfg.markets = reconcile_markets(cfg.markets, previous_markets, new_markets);
 
     write_project_config(&config_path, &cfg)?;
     println!("  + arc.toml updated");
@@ -132,17 +133,90 @@ fn collect_markets_for_skills(
     markets
 }
 
-/// Merge new markets with existing, avoiding duplicates by URL.
-fn merge_markets(existing: Vec<MarketEntry>, new: Vec<MarketEntry>) -> Vec<MarketEntry> {
-    let mut result = existing;
+/// Keep existing markets that were not implied by the previous skill selection,
+/// then append the markets implied by the current selection.
+fn reconcile_markets(
+    existing: Vec<MarketEntry>,
+    previous_managed: Vec<MarketEntry>,
+    new_managed: Vec<MarketEntry>,
+) -> Vec<MarketEntry> {
+    let previous_urls: std::collections::HashSet<String> =
+        previous_managed.into_iter().map(|m| m.url).collect();
+    let mut result: Vec<MarketEntry> = existing
+        .into_iter()
+        .filter(|entry| !previous_urls.contains(&entry.url))
+        .collect();
     let mut seen_urls: std::collections::HashSet<String> =
         result.iter().map(|m| m.url.clone()).collect();
 
-    for entry in new {
+    for entry in new_managed {
         if seen_urls.insert(entry.url.clone()) {
             result.push(entry);
         }
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reconcile_markets;
+    use arc_core::project::MarketEntry;
+
+    #[test]
+    fn reconcile_markets_removes_stale_skill_market() {
+        let existing = vec![
+            MarketEntry {
+                url: "https://example.com/market1.git".to_string(),
+            },
+            MarketEntry {
+                url: "https://example.com/market2.git".to_string(),
+            },
+        ];
+        let previous_managed = existing.clone();
+        let new_managed = vec![MarketEntry {
+            url: "https://example.com/market2.git".to_string(),
+        }];
+
+        let markets = reconcile_markets(existing, previous_managed, new_managed);
+
+        assert_eq!(
+            markets,
+            vec![MarketEntry {
+                url: "https://example.com/market2.git".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn reconcile_markets_preserves_unrelated_existing_market() {
+        let existing = vec![
+            MarketEntry {
+                url: "https://example.com/manual.git".to_string(),
+            },
+            MarketEntry {
+                url: "https://example.com/market1.git".to_string(),
+            },
+        ];
+        let previous_managed = vec![MarketEntry {
+            url: "https://example.com/market1.git".to_string(),
+        }];
+        let new_managed = vec![MarketEntry {
+            url: "https://example.com/market2.git".to_string(),
+        }];
+
+        let markets = reconcile_markets(existing, previous_managed, new_managed);
+
+        assert_eq!(
+            markets,
+            vec![
+                MarketEntry {
+                    url: "https://example.com/manual.git".to_string(),
+                },
+                MarketEntry {
+                    url: "https://example.com/market2.git".to_string(),
+                },
+            ]
+        );
+    }
 }

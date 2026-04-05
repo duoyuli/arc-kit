@@ -2,12 +2,11 @@ use std::collections::HashSet;
 use std::io;
 
 use arc_core::models::SkillEntry;
-use dialoguer::MultiSelect;
 use dialoguer::console;
 
 use crate::agent::agent_display_name;
 use crate::fuzzy::{browse_list, fuzzy_multi_select, fuzzy_select_opt};
-use crate::theme::theme;
+use crate::interact_required_multi_select;
 
 /// Pick skills only (for `arc project apply` / `require` list). No agent selection.
 pub fn run_skill_require_pick_wizard(skills: &[SkillEntry]) -> dialoguer::Result<Vec<String>> {
@@ -22,16 +21,7 @@ pub fn run_skill_require_pick_wizard_with_defaults(
     let pre: HashSet<&str> = preselected.iter().map(|s| s.as_str()).collect();
     let name_width = skills.iter().map(|s| s.name.len()).max().unwrap_or(0);
     let display_labels: Vec<String> = skills.iter().map(|s| skill_label(s, name_width)).collect();
-    let search_corpus: Vec<String> = skills
-        .iter()
-        .map(|s| {
-            if s.summary.is_empty() {
-                s.name.clone()
-            } else {
-                format!("{} {}", s.name, s.summary)
-            }
-        })
-        .collect();
+    let search_corpus: Vec<String> = skills.iter().map(skill_search_corpus).collect();
 
     let defaults: Vec<bool> = skills
         .iter()
@@ -91,10 +81,7 @@ pub fn run_skill_install_wizard(
     for label in &installed_labels {
         println!("  {label}");
     }
-    let selected_agent_indexes = MultiSelect::with_theme(&theme())
-        .with_prompt("Agent")
-        .items(&agent_labels)
-        .interact()?;
+    let selected_agent_indexes = interact_required_multi_select("Agent", &agent_labels, None)?;
     let selected_agents = selected_agent_indexes
         .into_iter()
         .filter_map(|index| installable.get(index).map(|id| (*id).clone()))
@@ -138,14 +125,9 @@ pub fn run_skill_uninstall_wizard(
             .iter()
             .map(|id| agent_display_name(id))
             .collect();
-        let selected_indexes = MultiSelect::with_theme(&theme())
-            .with_prompt("Agent")
-            .items(&agent_labels)
-            .defaults(&vec![true; skill.installed_targets.len()])
-            .interact()?;
-        if selected_indexes.is_empty() {
-            return Ok(None);
-        }
+        let defaults = vec![true; skill.installed_targets.len()];
+        let selected_indexes =
+            interact_required_multi_select("Agent", &agent_labels, Some(&defaults))?;
         selected_indexes
             .into_iter()
             .filter_map(|i| skill.installed_targets.get(i).cloned())
@@ -161,21 +143,24 @@ where
 {
     let name_width = skills.iter().map(|s| s.name.len()).max().unwrap_or(0);
     let display_labels: Vec<String> = skills.iter().map(|s| skill_label(s, name_width)).collect();
-    let search_corpus: Vec<String> = skills
-        .iter()
-        .map(|s| {
-            if s.summary.is_empty() {
-                s.name.clone()
-            } else {
-                format!("{} {}", s.name, s.summary)
-            }
-        })
-        .collect();
+    let search_corpus: Vec<String> = skills.iter().map(skill_search_corpus).collect();
     browse_list(skills, &display_labels, &search_corpus, render_detail)
 }
 
+/// Name, summary, and origin (including market owner/repo) for fuzzy matching.
+fn skill_search_corpus(entry: &SkillEntry) -> String {
+    let mut out = if entry.summary.is_empty() {
+        entry.name.clone()
+    } else {
+        format!("{} {}", entry.name, entry.summary)
+    };
+    out.push(' ');
+    out.push_str(&entry.origin_display());
+    out
+}
+
 fn skill_label(entry: &SkillEntry, name_width: usize) -> String {
-    let origin = entry.origin.label();
+    let origin = entry.origin_display();
     if entry.installed_targets.is_empty() {
         format!("{:<width$}  {origin}", entry.name, width = name_width)
     } else {

@@ -310,8 +310,9 @@ pub fn project_skill_path(
     Some(p.join(skill_name))
 }
 
-/// True if `skill_name` is present under the project tree for every install target agent.
-pub fn project_skills_satisfied_for_requirements(
+/// True if `skill_name` exists under the project tree for **every** detected agent that supports
+/// project-local skills. Used by `arc project apply` to decide whether replication is still needed.
+pub fn project_skills_satisfied_all(
     cache: &DetectCache,
     project_root: &Path,
     skill_name: &str,
@@ -321,6 +322,24 @@ pub fn project_skills_satisfied_for_requirements(
         return false;
     }
     targets.iter().all(|agent_id| {
+        project_skill_path(project_root, agent_id, skill_name)
+            .map(|p| p.exists())
+            .unwrap_or(false)
+    })
+}
+
+/// True if `skill_name` exists under the project tree for **at least one** such agent.
+/// Used by `arc status` to report whether anything is materialized in the repo.
+pub fn project_skills_satisfied_any(
+    cache: &DetectCache,
+    project_root: &Path,
+    skill_name: &str,
+) -> bool {
+    let targets = cache.agents_for_project_skill_install(&ResourceKind::Skill);
+    if targets.is_empty() {
+        return false;
+    }
+    targets.iter().any(|agent_id| {
         project_skill_path(project_root, agent_id, skill_name)
             .map(|p| p.exists())
             .unwrap_or(false)

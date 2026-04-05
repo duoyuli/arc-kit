@@ -1,7 +1,9 @@
 use std::io;
 
-use console::{Key, Term, style};
+use console::{Key, Term, style, truncate_str};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
+
+use crate::validate_required_multi_selection;
 
 enum SelectMode {
     Single,
@@ -12,6 +14,32 @@ enum SelectResult {
     Cancelled,
     One(usize),
     Many(Vec<usize>),
+}
+
+fn truncation_tail(max_width: usize) -> &'static str {
+    match max_width {
+        0 => "",
+        1 => ".",
+        2 => "..",
+        _ => "...",
+    }
+}
+
+fn clamp_line_width(line: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    truncate_str(line, max_width, truncation_tail(max_width)).into_owned()
+}
+
+fn write_clamped_line(term: &Term, line: String, max_width: usize) -> io::Result<()> {
+    term.write_line(&clamp_line_width(&line, max_width))
+}
+
+fn toggle_multi_checked(checked: &mut [bool], filtered: &[usize], sel: usize) {
+    if let Some(&item_idx) = filtered.get(sel) {
+        checked[item_idx] = !checked[item_idx];
+    }
 }
 
 fn fuzzy_select_engine(
@@ -34,19 +62,30 @@ fn fuzzy_select_engine_at(
     let mut sel: usize = initial_sel;
     let mut starting_row: usize = 0;
     let mut prev_drawn: usize = 0;
+    let mut warning: Option<&'static str> = None;
     let mut checked: Vec<bool> = match &mode {
         SelectMode::Single => vec![false; display_labels.len()],
         SelectMode::Multi { defaults } => defaults.clone(),
     };
     let is_multi = matches!(mode, SelectMode::Multi { .. });
 
-    let visible_rows = (term.size().0 as usize).saturating_sub(4).clamp(3, 15);
-
     term.hide_cursor()?;
 
     loop {
+        let (rows, cols) = term.size();
+        // Reserve 3 lines: search prompt + hint line + safety margin.
+        let visible_rows = (rows as usize).saturating_sub(3).clamp(1, 15);
+        // Keep one spare column so write_line never triggers terminal auto-wrap.
+        let max_line_width = (cols as usize).saturating_sub(1).max(1);
+
         if prev_drawn > 0 {
-            term.clear_last_lines(prev_drawn)?;
+            // Move cursor up and clear lines individually for more reliable clearing
+            term.move_cursor_up(prev_drawn)?;
+            for _ in 0..prev_drawn {
+                term.clear_line()?;
+                term.move_cursor_down(1)?;
+            }
+            term.move_cursor_up(prev_drawn)?;
         }
 
         let filtered: Vec<usize> = if search.is_empty() {
@@ -74,13 +113,21 @@ fn fuzzy_select_engine_at(
         }
 
         if search.is_empty() {
-            term.write_line(&format!(
-                "  {} {}",
-                style("/").dim(),
-                style("type to filter...").dim()
-            ))?;
+            write_clamped_line(
+                &term,
+                format!(
+                    "  {} {}",
+                    style("/").dim(),
+                    style("type to filter...").dim()
+                ),
+                max_line_width,
+            )?;
         } else {
-            term.write_line(&format!("  {} {}", style("/").cyan().bold(), search))?;
+            write_clamped_line(
+                &term,
+                format!("  {} {}", style("/").cyan().bold(), search),
+                max_line_width,
+            )?;
         }
 
         let num_shown = filtered
@@ -108,13 +155,17 @@ fn fuzzy_select_engine_at(
             };
 
             if is_selected {
-                term.write_line(&format!(
-                    "  {} {check}{}",
-                    style("❯").green(),
-                    style(display).bold()
-                ))?;
+                write_clamped_line(
+                    &term,
+                    format!("  {} {check}{}", style("❯").green(), style(display).bold()),
+                    max_line_width,
+                )?;
             } else {
-                term.write_line(&format!("    {check}{}", style(display).dim()))?;
+                write_clamped_line(
+                    &term,
+                    format!("    {check}{}", style(display).dim()),
+                    max_line_width,
+                )?;
             }
         }
 
@@ -125,27 +176,34 @@ fn fuzzy_select_engine_at(
             format!("{} of {}", filtered.len(), display_labels.len())
         };
         let hint = if is_multi {
-            format!(
+            let base = format!(
                 "{}  ·  {} selected  ·  ↑↓ move  space toggle  ↵ confirm  esc quit",
                 count_str, selected_count
-            )
+            );
+            if let Some(message) = warning {
+                format!("{message}  ·  {base}")
+            } else {
+                base
+            }
         } else {
             format!("{}  ·  ↑↓ move  ↵ select  esc quit", count_str)
         };
-        term.write_line(&format!("  {}", style(hint).dim()))?;
+        write_clamped_line(&term, format!("  {}", style(hint).dim()), max_line_width)?;
 
         prev_drawn = num_shown + 2;
         term.flush()?;
 
         match term.read_key()? {
             Key::Escape => {
-                term.clear_last_lines(prev_drawn)?;
+                term.move_cursor_up(prev_drawn)?;
+                for _ in 0..prev_drawn {
+                    term.clear_line()?;
+                    term.move_cursor_down(1)?;
+                }
                 term.show_cursor()?;
                 return Ok(SelectResult::Cancelled);
             }
             Key::Enter => {
-                term.clear_last_lines(prev_drawn)?;
-                term.show_cursor()?;
                 if is_multi {
                     let indices: Vec<usize> = checked
                         .iter()
@@ -153,22 +211,35 @@ fn fuzzy_select_engine_at(
                         .filter(|(_, c)| **c)
                         .map(|(i, _)| i)
                         .collect();
+                    if let Err(message) = validate_required_multi_selection(&indices) {
+                        warning = Some(message);
+                        continue;
+                    }
+                    term.move_cursor_up(prev_drawn)?;
+                    for _ in 0..prev_drawn {
+                        term.clear_line()?;
+                        term.move_cursor_down(1)?;
+                    }
+                    term.show_cursor()?;
                     return Ok(SelectResult::Many(indices));
                 }
+                term.move_cursor_up(prev_drawn)?;
+                for _ in 0..prev_drawn {
+                    term.clear_line()?;
+                    term.move_cursor_down(1)?;
+                }
+                term.show_cursor()?;
                 return Ok(match filtered.get(sel).copied() {
                     Some(i) => SelectResult::One(i),
                     None => SelectResult::Cancelled,
                 });
             }
             Key::Char(' ') if is_multi => {
-                if let Some(&item_idx) = filtered.get(sel) {
-                    checked[item_idx] = !checked[item_idx];
-                    if !filtered.is_empty() {
-                        sel = (sel + 1) % filtered.len();
-                    }
-                }
+                warning = None;
+                toggle_multi_checked(&mut checked, &filtered, sel);
             }
             Key::ArrowUp | Key::BackTab => {
+                warning = None;
                 if !filtered.is_empty() {
                     sel = if sel == 0 {
                         filtered.len() - 1
@@ -178,16 +249,19 @@ fn fuzzy_select_engine_at(
                 }
             }
             Key::ArrowDown | Key::Tab => {
+                warning = None;
                 if !filtered.is_empty() {
                     sel = (sel + 1) % filtered.len();
                 }
             }
             Key::Backspace => {
+                warning = None;
                 search.pop();
                 sel = 0;
                 starting_row = 0;
             }
             Key::Char(c) if !c.is_ascii_control() => {
+                warning = None;
                 search.push(c);
                 sel = 0;
                 starting_row = 0;
@@ -260,5 +334,41 @@ where
             }
             SelectResult::Cancelled | SelectResult::Many(_) => return Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clamp_line_width, toggle_multi_checked};
+    use console::{measure_text_width, style};
+
+    #[test]
+    fn clamp_line_width_keeps_styled_lines_within_terminal_width() {
+        let line = format!(
+            "  {} {}",
+            style("❯").green(),
+            style("baoyu-cover-image  market (jimliu/baoyu-skills)  → Claude Code, Codex").bold()
+        );
+
+        let clamped = clamp_line_width(&line, 24);
+
+        assert!(measure_text_width(&clamped) <= 24);
+    }
+
+    #[test]
+    fn clamp_line_width_uses_short_tail_for_tiny_widths() {
+        let clamped = clamp_line_width("abcdef", 2);
+
+        assert_eq!(measure_text_width(&clamped), 2);
+    }
+
+    #[test]
+    fn toggle_multi_checked_only_flips_current_item() {
+        let mut checked = vec![false, true, false];
+        let filtered = vec![2, 0];
+
+        toggle_multi_checked(&mut checked, &filtered, 1);
+
+        assert_eq!(checked, vec![true, true, false]);
     }
 }

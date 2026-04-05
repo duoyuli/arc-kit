@@ -120,6 +120,33 @@ pub struct SkillEntry {
     pub market_repo: Option<String>,
 }
 
+impl SkillEntry {
+    /// Human-readable origin for lists and TUI (includes market owner/repo when known).
+    pub fn origin_display(&self) -> String {
+        match &self.origin {
+            SkillOrigin::Market { source_id } => self
+                .market_repo
+                .as_ref()
+                .map(|repo| format!("market ({repo})"))
+                .unwrap_or_else(|| format!("market ({source_id})")),
+            SkillOrigin::BuiltIn => "built-in".to_string(),
+            SkillOrigin::Local => "local".to_string(),
+        }
+    }
+
+    /// Stable `origin` string for JSON list output (`market:owner/repo` when known).
+    pub fn origin_json(&self) -> String {
+        match &self.origin {
+            SkillOrigin::Market { .. } => self
+                .market_repo
+                .as_ref()
+                .map(|repo| format!("market:{repo}"))
+                .unwrap_or_else(|| "market".to_string()),
+            _ => self.origin.label().to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogResource {
     pub id: String,

@@ -1,49 +1,23 @@
 use serde::Serialize;
 
 use arc_core::error::ArcError;
+use arc_core::status::{
+    AgentRuntimeStatus, CatalogStatus, ProjectStatusSection, RecommendedAction,
+};
 
 // ── Schema version ────────────────────────────────────────
 // Bump when a breaking change is made to any JSON schema.
-pub const SCHEMA_VERSION: &str = "1";
+pub const SCHEMA_VERSION: &str = "3";
 
 // ── status ────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct StatusOutput {
     pub schema_version: &'static str,
-    pub agents: Vec<AgentStatus>,
-    pub markets: MarketsSummary,
-    pub installed_skills: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<ProjectStatus>,
-}
-
-#[derive(Serialize)]
-pub struct AgentStatus {
-    pub id: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    pub skill_count: usize,
-}
-
-#[derive(Serialize)]
-pub struct MarketsSummary {
-    pub count: usize,
-    pub resource_count: usize,
-}
-
-#[derive(Serialize)]
-pub struct ProjectStatus {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_path: Option<String>,
-    pub required_skills: Vec<String>,
-    pub installed_skills: Vec<String>,
-    pub missing_skills: Vec<String>,
-    pub unavailable_skills: Vec<String>,
+    pub project: ProjectStatusSection,
+    pub agents: Vec<AgentRuntimeStatus>,
+    pub catalog: CatalogStatus,
+    pub actions: Vec<RecommendedAction>,
 }
 
 // ── skill list ────────────────────────────────────────────
@@ -157,31 +131,53 @@ pub fn print_json<T: Serialize>(value: &T) -> Result<(), ArcError> {
 
 #[cfg(test)]
 mod tests {
+    use arc_core::status::{
+        ActionSeverity, AgentProviderStatus, ProjectProviderAgentStatus, ProjectProviderStatus,
+        ProjectSkillRollout, ProjectSkillState, ProjectState, ProjectSummary, ProviderMatchState,
+    };
+
     use super::*;
 
     #[test]
     fn status_output_serializes_correctly() {
         let out = StatusOutput {
             schema_version: SCHEMA_VERSION,
-            agents: vec![AgentStatus {
-                id: "claude".to_string(),
-                name: "Claude".to_string(),
-                version: Some("1.0".to_string()),
-                provider: Some("aicodemirror".to_string()),
-                skill_count: 3,
-            }],
-            markets: MarketsSummary {
-                count: 1,
-                resource_count: 10,
+            project: ProjectStatusSection {
+                state: ProjectState::None,
+                name: "workspace".to_string(),
+                root: None,
+                config_path: None,
+                error: None,
+                summary: None,
+                skills: vec![],
+                agents: vec![],
+                provider: None,
             },
-            installed_skills: 3,
-            project: None,
+            agents: vec![AgentRuntimeStatus {
+                id: "claude".to_string(),
+                name: "Claude Code".to_string(),
+                version: Some("1.0".to_string()),
+                provider: Some(AgentProviderStatus {
+                    name: "aicodemirror".to_string(),
+                    display_name: "AiCodeMirror".to_string(),
+                }),
+                global_skill_count: 3,
+                supports_project_skills: true,
+                supports_provider: true,
+            }],
+            catalog: CatalogStatus {
+                market_count: 1,
+                resource_count: 10,
+                global_skill_count: 3,
+                unhealthy_market_count: 0,
+            },
+            actions: vec![],
         };
         let json = serde_json::to_value(&out).unwrap();
         assert_eq!(json["schema_version"], SCHEMA_VERSION);
         assert_eq!(json["agents"][0]["id"], "claude");
-        assert_eq!(json["agents"][0]["skill_count"], 3);
-        assert!(json["project"].is_null());
+        assert_eq!(json["agents"][0]["global_skill_count"], 3);
+        assert_eq!(json["project"]["state"], "none");
     }
 
     #[test]
@@ -189,26 +185,55 @@ mod tests {
         let out = StatusOutput {
             schema_version: SCHEMA_VERSION,
             agents: vec![],
-            markets: MarketsSummary {
-                count: 0,
+            catalog: CatalogStatus {
+                market_count: 0,
                 resource_count: 0,
+                global_skill_count: 0,
+                unhealthy_market_count: 0,
             },
-            installed_skills: 0,
-            project: Some(ProjectStatus {
+            project: ProjectStatusSection {
+                state: ProjectState::Active,
                 name: "my-project".to_string(),
-                config_path: Some("/path/arc.toml".to_string()),
-                required_skills: vec!["arch-review".to_string()],
-                installed_skills: vec!["arch-review".to_string()],
-                missing_skills: vec![],
-                unavailable_skills: vec![],
-            }),
+                root: Some("/path".into()),
+                config_path: Some("/path/arc.toml".into()),
+                error: None,
+                summary: Some(ProjectSummary {
+                    required_skills: 1,
+                    ready_skills: 1,
+                    partial_skills: 0,
+                    missing_skills: 0,
+                    unavailable_skills: 0,
+                    target_agents: 1,
+                }),
+                skills: vec![ProjectSkillRollout {
+                    name: "arch-review".to_string(),
+                    state: ProjectSkillState::Ready,
+                    ready_on_agents: vec!["claude".to_string()],
+                    missing_on_agents: vec![],
+                }],
+                agents: vec![],
+                provider: Some(ProjectProviderStatus {
+                    name: "openai".to_string(),
+                    matched_agents: 1,
+                    mismatched_agents: 0,
+                    missing_profiles: 0,
+                    agents: vec![ProjectProviderAgentStatus {
+                        id: "claude".to_string(),
+                        name: "Claude Code".to_string(),
+                        state: ProviderMatchState::Matched,
+                    }],
+                }),
+            },
+            actions: vec![RecommendedAction {
+                severity: ActionSeverity::Info,
+                message: "All good".to_string(),
+                command: None,
+            }],
         };
         let json = serde_json::to_value(&out).unwrap();
-        assert_eq!(json["project"]["name"], "my-project");
-        assert_eq!(
-            json["project"]["missing_skills"].as_array().unwrap().len(),
-            0
-        );
+        assert_eq!(json["project"]["state"], "active");
+        assert_eq!(json["project"]["summary"]["required_skills"], 1);
+        assert_eq!(json["actions"][0]["severity"], "info");
     }
 
     #[test]

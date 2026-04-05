@@ -51,7 +51,7 @@ fn provider_test_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, output: {stdout}"));
-    assert_eq!(json["schema_version"], "1");
+    assert_eq!(json["schema_version"], "3");
 }
 
 #[test]
@@ -290,7 +290,7 @@ fn apply_json_output() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert_eq!(json["schema_version"], "1");
+    assert_eq!(json["schema_version"], "3");
 }
 
 // ── non-TTY guard smoke tests ──────────────────────────

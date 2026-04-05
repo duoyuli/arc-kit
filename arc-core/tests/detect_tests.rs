@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
 use std::fs;
 
 use arc_core::detect::{
-    ProviderKind, SkillInstallStrategy, coding_agent_spec, default_install_targets, detect_agent,
-    detect_agents_for_install, ordered_agent_ids_for_resource_kind, project_skill_path,
-    resource_install_subdir,
+    AgentInfo, DetectCache, ProviderKind, SkillInstallStrategy, coding_agent_spec,
+    default_install_targets, detect_agent, detect_agents_for_install,
+    ordered_agent_ids_for_resource_kind, project_skill_path, project_skills_satisfied_all,
+    project_skills_satisfied_any, resource_install_subdir,
 };
 use arc_core::models::ResourceKind;
 use arc_core::paths::ArcPaths;
@@ -102,6 +104,40 @@ fn coding_agent_spec_carries_install_strategy_and_provider_metadata() {
     assert_eq!(openclaw.skill_install_strategy, SkillInstallStrategy::Copy);
     assert_eq!(openclaw.provider_kind, None);
     assert!(openclaw.provider_seed.is_none());
+}
+
+#[test]
+fn project_skills_any_vs_all_when_only_one_agent_has_skill() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    fs::create_dir_all(repo.join(".claude/skills/demo")).unwrap();
+    fs::write(repo.join(".claude/skills/demo/SKILL.md"), "# d\n").unwrap();
+
+    let paths = ArcPaths::with_user_home(tmp.path());
+    let mut agents = BTreeMap::new();
+    agents.insert(
+        "claude".to_string(),
+        AgentInfo {
+            name: "claude".to_string(),
+            detected: true,
+            root: Some(paths.user_home().join(".claude")),
+            executable: Some("/a".to_string()),
+            version: Some("1".to_string()),
+        },
+    );
+    agents.insert(
+        "codex".to_string(),
+        AgentInfo {
+            name: "codex".to_string(),
+            detected: true,
+            root: Some(paths.user_home().join(".codex")),
+            executable: Some("/b".to_string()),
+            version: Some("1".to_string()),
+        },
+    );
+    let cache = DetectCache::from_map(agents);
+    assert!(project_skills_satisfied_any(&cache, &repo, "demo"));
+    assert!(!project_skills_satisfied_all(&cache, &repo, "demo"));
 }
 
 #[test]

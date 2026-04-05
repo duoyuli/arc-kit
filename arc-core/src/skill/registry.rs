@@ -12,6 +12,7 @@ use crate::paths::ArcPaths;
 use crate::skill::builtin;
 use crate::skill::local;
 use crate::skill::merge;
+use crate::skill::tracking::is_arc_tracking_file_name;
 
 pub struct SkillRegistry {
     paths: ArcPaths,
@@ -116,7 +117,17 @@ impl SkillRegistry {
             };
             let names: HashSet<String> = rd
                 .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter_map(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with('.') || is_arc_tracking_file_name(&name) {
+                        return None;
+                    }
+                    let path = entry.path();
+                    if !(path.is_symlink() || path.is_dir()) {
+                        return None;
+                    }
+                    Some(name)
+                })
                 .collect();
             installed_per_agent.insert(agent_id.as_str(), names);
         }

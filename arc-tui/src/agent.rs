@@ -1,6 +1,7 @@
 use arc_core::detect::coding_agent_spec;
-use dialoguer::{MultiSelect, Select};
+use dialoguer::Select;
 
+use crate::interact_required_multi_select;
 use crate::theme::theme;
 
 pub(crate) fn agent_display_name(id: &str) -> String {
@@ -44,11 +45,7 @@ pub fn select_agents(agents: &[String], installed: &[&String]) -> dialoguer::Res
     }
     let labels: Vec<String> = agents.iter().map(|id| agent_display_name(id)).collect();
     let defaults: Vec<bool> = agents.iter().map(|id| installed.contains(&id)).collect();
-    let selected_indexes = MultiSelect::with_theme(&theme())
-        .with_prompt("Agent")
-        .items(&labels)
-        .defaults(&defaults)
-        .interact()?;
+    let selected_indexes = interact_required_multi_select("Agent", &labels, Some(&defaults))?;
     Ok(selected_indexes
         .into_iter()
         .filter_map(|i| agents.get(i).cloned())

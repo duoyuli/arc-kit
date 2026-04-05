@@ -1,7 +1,5 @@
+use crate::interact_required_multi_select;
 use arc_core::models::CatalogResource;
-use dialoguer::MultiSelect;
-
-use crate::theme::theme;
 
 pub fn run_install_wizard(
     kind: &str,
@@ -18,21 +16,14 @@ pub fn run_install_wizard(
             }
         })
         .collect();
-    let selected_resource_indexes = MultiSelect::with_theme(&theme())
-        .with_prompt(format!("Select {}s", kind.replace('_', " ")))
-        .items(&resource_labels)
-        .interact()?;
-    if selected_resource_indexes.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
+    let prompt = format!("Select {}s", kind.replace('_', " "));
+    let selected_resource_indexes =
+        interact_required_multi_select(&prompt, &resource_labels, None)?;
     let selected_resources = selected_resource_indexes
         .into_iter()
         .filter_map(|index| resources.get(index).map(|resource| resource.name.clone()))
         .collect();
-    let selected_agent_indexes = MultiSelect::with_theme(&theme())
-        .with_prompt("Select agents")
-        .items(agents)
-        .interact()?;
+    let selected_agent_indexes = interact_required_multi_select("Select agents", agents, None)?;
     let selected_agents = selected_agent_indexes
         .into_iter()
         .filter_map(|index| agents.get(index).cloned())

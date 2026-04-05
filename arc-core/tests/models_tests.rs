@@ -1,6 +1,7 @@
+use std::path::PathBuf;
 use std::str::FromStr;
 
-use arc_core::models::{ResourceKind, SkillOrigin};
+use arc_core::models::{ResourceKind, SkillEntry, SkillOrigin};
 
 #[test]
 fn resource_kind_roundtrip_string_values() {
@@ -63,4 +64,51 @@ fn skill_origin_priority_local_is_highest() {
 fn skill_origin_display() {
     assert_eq!(format!("{}", SkillOrigin::Local), "local");
     assert_eq!(format!("{}", SkillOrigin::BuiltIn), "built-in");
+}
+
+fn sample_skill_entry(origin: SkillOrigin, market_repo: Option<&str>) -> SkillEntry {
+    SkillEntry {
+        name: "demo".to_string(),
+        origin,
+        summary: String::new(),
+        source_path: PathBuf::from("."),
+        installed_targets: Vec::new(),
+        market_repo: market_repo.map(String::from),
+    }
+}
+
+#[test]
+fn skill_entry_origin_display_includes_market_repo() {
+    let e = sample_skill_entry(
+        SkillOrigin::Market {
+            source_id: "my-slug".to_string(),
+        },
+        Some("owner/repo"),
+    );
+    assert_eq!(e.origin_display(), "market (owner/repo)");
+    assert_eq!(e.origin_json(), "market:owner/repo");
+}
+
+#[test]
+fn skill_entry_origin_display_market_falls_back_to_source_id() {
+    let e = sample_skill_entry(
+        SkillOrigin::Market {
+            source_id: "my-slug".to_string(),
+        },
+        None,
+    );
+    assert_eq!(e.origin_display(), "market (my-slug)");
+    assert_eq!(e.origin_json(), "market");
+}
+
+#[test]
+fn skill_entry_origin_display_builtin_and_local() {
+    assert_eq!(
+        sample_skill_entry(SkillOrigin::BuiltIn, None).origin_display(),
+        "built-in"
+    );
+    assert_eq!(
+        sample_skill_entry(SkillOrigin::Local, None).origin_display(),
+        "local"
+    );
 }

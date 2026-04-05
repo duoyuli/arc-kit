@@ -65,8 +65,9 @@ OpenClaw 做了比较严格的安全检查，不支持软链接加载Skill，因
 **Q: `arc market update` 会做什么？**
 
 拉取所有 market 源的最新内容，重建索引。然后：
-- 删除 registry 中已不存在的 skill 的全局安装
-- 重装路径变更的 skill（软链重指向、目录刷新）
+- 仅维护 **arc 已追踪** 的全局 skill 安装，不会删除手工放进 agent 目录的 skill
+- 删除 registry 中已不存在的已追踪全局安装
+- 仅在目标确实落后时才刷新（软链重指向、目录复制重写）
 
 **Q: 项目级 skill 和全局 skill 有什么区别？**
 
@@ -95,7 +96,7 @@ brew install arc-kit
 
 ```text
 arc                     # 显示帮助
-arc status              # 显示当前状态
+arc status              # 显示 Project / Agents / Catalog 状态
 arc version             # 显示版本（无 --format json）
 arc completion <shell>  # 生成 shell 补全
 arc provider list       # 列出可用模型供应商
@@ -113,6 +114,8 @@ arc project apply       # 应用 arc.toml 配置
 arc project edit        # 编辑 arc.toml（交互式）
 ```
 
+交互式列表类界面会按当前终端视口宽度裁剪显示，避免窄窗口下因自动换行造成重绘残影。
+
 
 ## 文档
 
@@ -121,8 +124,3 @@ arc project edit        # 编辑 arc.toml（交互式）
 | [docs/user/guide.md](docs/user/guide.md) | 完整用户手册 |
 | [docs/developer/design.md](docs/developer/design.md) | 交互/非交互设计规范 |
 | [docs/developer/development.md](docs/developer/development.md) | 开发贡献指南 |
-
-
-## 许可证
-
-MIT

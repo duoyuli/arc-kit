@@ -4,8 +4,9 @@ use std::io::{self, IsTerminal};
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::market::bootstrap::MarketSyncReport;
-use arc_core::models::{ResourceKind, SkillEntry, SkillOrigin};
+use arc_core::models::{ResourceKind, SkillEntry};
 use arc_core::skill::SkillRegistry;
+use arc_core::skill::tracking::{track_global_skill_install, untrack_global_skill_install};
 use arc_core::{ArcPaths, InstallEngine};
 use arc_tui::{run_skill_browser, run_skill_install_wizard, run_skill_uninstall_wizard};
 use console::style;
@@ -60,14 +61,7 @@ fn list(
             .iter()
             .map(|s| SkillItem {
                 name: s.name.clone(),
-                origin: match &s.origin {
-                    SkillOrigin::Market { .. } => s
-                        .market_repo
-                        .as_ref()
-                        .map(|repo| format!("market:{repo}"))
-                        .unwrap_or_else(|| "market".to_string()),
-                    _ => s.origin.label().to_string(),
-                },
+                origin: s.origin_json(),
                 summary: s.summary.clone(),
                 installed_targets: s.installed_targets.clone(),
             })
@@ -152,7 +146,7 @@ fn install(
             let Some(skill) = skills.iter().find(|s| &s.name == name) else {
                 continue;
             };
-            install_one(paths, &registry, &engine, skill, &selected_agents)?;
+            install_one(paths, cache, &registry, &engine, skill, &selected_agents)?;
         }
         return Ok(());
     }
@@ -168,13 +162,14 @@ fn install(
     };
 
     if *fmt == OutputFormat::Json {
-        return install_one_json(paths, &registry, &engine, &skill, &targets);
+        return install_one_json(paths, cache, &registry, &engine, &skill, &targets);
     }
-    install_one(paths, &registry, &engine, &skill, &targets)
+    install_one(paths, cache, &registry, &engine, &skill, &targets)
 }
 
 fn install_one(
     paths: &ArcPaths,
+    cache: &DetectCache,
     registry: &SkillRegistry,
     engine: &InstallEngine,
     skill: &SkillEntry,
@@ -215,6 +210,7 @@ fn install_one(
         &new_targets,
     )?;
     for agent in &installed {
+        record_global_skill_install(cache, agent, &skill.name, &source_path)?;
         let agent_name = agent_display_name(agent);
         println!(
             "  {} {} → {}",
@@ -228,6 +224,7 @@ fn install_one(
 
 fn install_one_json(
     paths: &ArcPaths,
+    cache: &DetectCache,
     registry: &SkillRegistry,
     engine: &InstallEngine,
     skill: &SkillEntry,
@@ -264,6 +261,7 @@ fn install_one_json(
         ) {
             Ok(installed) => {
                 for agent in &installed {
+                    record_global_skill_install(cache, agent, &skill.name, &source_path)?;
                     items.push(WriteResultItem {
                         name: skill.name.clone(),
                         agent: agent.clone(),
@@ -330,6 +328,7 @@ fn uninstall(
             return Ok(());
         };
         let removed = engine.uninstall(&name, &ResourceKind::Skill, Some(&targets))?;
+        clear_global_skill_tracking(cache, &name, Some(&targets))?;
         if removed {
             println!("  {} {} removed.", style("✓").green(), name);
         } else {
@@ -346,6 +345,7 @@ fn uninstall(
         Some(args.agent)
     };
     let removed = engine.uninstall(&name, &ResourceKind::Skill, targets.as_deref())?;
+    clear_global_skill_tracking(cache, &name, targets.as_deref())?;
 
     if *fmt == OutputFormat::Json {
         print_json(&WriteResult {
@@ -366,6 +366,52 @@ fn uninstall(
     } else {
         println!("  {} {} not installed.", style("─").dim(), name);
     }
+    Ok(())
+}
+
+fn record_global_skill_install(
+    cache: &DetectCache,
+    agent: &str,
+    skill: &str,
+    source_path: &std::path::Path,
+) -> Result<(), ArcError> {
+    let Some(agent_info) = cache.get_agent(agent) else {
+        return Ok(());
+    };
+    let Some(root) = &agent_info.root else {
+        return Ok(());
+    };
+    let Some(spec) = arc_core::detect::coding_agent_spec(agent) else {
+        return Ok(());
+    };
+    let skills_dir = root.join(spec.skills_subdir);
+    track_global_skill_install(&skills_dir, agent, skill, source_path)
+        .map_err(|err| ArcError::new(err.message))
+}
+
+fn clear_global_skill_tracking(
+    cache: &DetectCache,
+    skill: &str,
+    targets: Option<&[String]>,
+) -> Result<(), ArcError> {
+    let target_ids: Vec<String> = targets
+        .map(|items| items.to_vec())
+        .unwrap_or_else(|| cache.detected_agents().keys().cloned().collect());
+
+    for agent in target_ids {
+        let Some(agent_info) = cache.get_agent(&agent) else {
+            continue;
+        };
+        let Some(root) = &agent_info.root else {
+            continue;
+        };
+        let Some(spec) = arc_core::detect::coding_agent_spec(&agent) else {
+            continue;
+        };
+        untrack_global_skill_install(&root.join(spec.skills_subdir), skill)
+            .map_err(|err| ArcError::new(err.message))?;
+    }
+
     Ok(())
 }
 
@@ -395,7 +441,7 @@ fn info(
         print_json(&SkillInfoOutput {
             schema_version: SCHEMA_VERSION,
             name: skill.name.clone(),
-            origin: skill.origin.label().to_string(),
+            origin: skill.origin_display(),
             summary: skill.summary.clone(),
             installed_targets: skill.installed_targets.clone(),
             source_path: resolved.display().to_string(),
@@ -412,16 +458,7 @@ fn render_skill_detail(registry: &SkillRegistry, skill: &SkillEntry) {
     println!("  {}", style(&skill.name).bold());
     println!();
 
-    let origin_detail = match &skill.origin {
-        SkillOrigin::Market { source_id } => skill
-            .market_repo
-            .as_ref()
-            .map(|repo| format!("market ({repo})"))
-            .unwrap_or_else(|| format!("market ({source_id})")),
-        SkillOrigin::BuiltIn => "built-in".to_string(),
-        SkillOrigin::Local => "local".to_string(),
-    };
-    println!("  {}    {}", style("Origin").dim(), origin_detail);
+    println!("  {}    {}", style("Origin").dim(), skill.origin_display());
 
     if skill.installed_targets.is_empty() {
         println!(
@@ -468,15 +505,7 @@ fn render_skill_detail(registry: &SkillRegistry, skill: &SkillEntry) {
 
 fn render_skill_list(skills: &[SkillEntry]) {
     for skill in skills {
-        let origin = match &skill.origin {
-            SkillOrigin::Market { .. } => skill
-                .market_repo
-                .as_ref()
-                .map(|repo| format!("market:{repo}"))
-                .unwrap_or_else(|| "market".to_string()),
-            SkillOrigin::BuiltIn => "built-in".to_string(),
-            SkillOrigin::Local => "local".to_string(),
-        };
+        let origin = skill.origin_display();
         let status = if skill.installed_targets.is_empty() {
             "not installed".to_string()
         } else {

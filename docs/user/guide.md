@@ -78,7 +78,11 @@ CLI 只分两类语义（详见 [交互与自动化设计](../developer/design.m
 
 ## status
 
-查看当前 agent、provider、skill、market 的汇总状态。
+查看当前状态快照，固定分成三个模块：
+
+- `Project`：当前仓库的 `arc.toml`、required skills 落地进度、项目级 provider 对齐情况
+- `Agents`：当前机器检测到的 agent、版本、active provider、全局 skill 数
+- `Catalog`：market 数量、resource 总量、全局 skill 总量
 
 若存在 `arc.toml`，从**当前工作目录向上**查找最近的配置文件（子目录可继承上级项目）。
 
@@ -89,7 +93,14 @@ arc status
 arc --help   # 与裸 `arc` 输出相同
 ```
 
-非交互式（管道/CI）下若 `arc.toml` 中存在缺失且可安装的 skill，`arc status` 以 **退出码 1** 退出。
+`arc status` 为只读：**不**执行安装。`Project` 模块里，required skill 会被归类为：
+
+- `ready`：已在所有已检测且支持项目级 skills 的 agent 路径下落地
+- `partial`：仅在部分此类 agent 路径下落地
+- `missing`：catalog 中存在，但在这些项目路径下尚未落地
+- `unavailable`：当前 catalog 中根本找不到该 skill
+
+若 `arc.toml` 声明了 `[provider] name`，`Project` 模块还会显示各 provider-capable agent 是否已对齐；若未对齐，会提示下一步命令。
 
 ---
 
@@ -141,13 +152,15 @@ arc market remove <git-url-or-source-id>   # 内置源（built-in）不可移除
 arc market update   # pull、重建 catalog，并维护全局 skill 安装（见下）
 ```
 
-`arc market update` 完成 catalog 重建后，会按**合并后的 registry**（`local` > `built-in` > `market`）自动：① **删除**各 agent 全局目录里、registry 中**已不存在**的 skill 安装（软链或 OpenClaw 目录复制）；② 对**仍存在**且已安装的 skill **按当前 `resolve_source_path` 重装**，使安装指向最新路径（远程只改目录结构、不改 skill 是否提供时，会更新软链/复制内容，而不会误删）。
+`arc market update` 完成 catalog 重建后，会按**合并后的 registry**（`local` > `built-in` > `market`）自动维护 **arc 已追踪** 的全局安装：① **删除** registry 中**已不存在**的已追踪 skill 安装（软链或 OpenClaw 目录复制）；② 仅当目标**确实落后于当前 `resolve_source_path`** 时才重写安装，使其指向最新路径（远程只改目录结构时会更新软链/复制内容；手工放进 agent 目录但未被 arc 追踪的 skill 不会被误删）。
 
 ---
 
 ## skill
 
 列出、安装、卸载、查看 skill。来源：`local` > `built-in` > `market`，同名按优先级去重。裸调用 `arc skill` 等同于 `arc skill list`。
+
+交互式浏览列表时，长行会按当前终端宽度裁剪显示；在窄窗口中不会依赖终端自动换行。
 
 ```bash
 arc skill list
@@ -172,11 +185,11 @@ arc skill info my-skill
 
 默认软链接安装到各 agent；**OpenClaw** 为目录复制到 `~/.openclaw/skills/<name>/`（其余 agent 均为软链接）。**Cursor** 的全局安装目录为 `~/.cursor/skills-cursor/<name>/`（项目级路径仍为 `.cursor/skills/<name>/`）。
 
-**全局维护**（`arc market update` 在重建 catalog 之后自动执行）：先按上表合并 registry **删掉**已消失的 skill 的全局安装，再对仍登记且磁盘上仍有的安装做 **重装**，以指向当前解析路径（含 market 仓库内路径变更）。
+**全局维护**（`arc market update` 在重建 catalog 之后自动执行）：先按上表合并 registry **删掉**已消失的、且由 arc 追踪的全局安装，再对仍登记且目标已落后的安装做 **刷新**，以指向当前解析路径（含 market 仓库内路径变更）。手工安装内容不在自动维护范围内。
 
 ### 项目与全局
 
-`arc.toml` 中 `[skills] require` 为本仓库声明。`arc project apply` 会把 skill 落到**仓库内**下列路径（仅针对你选定的、已检测且支持项目级的 agent）：**交互式**下若确有缺失 skill 可装，会多选目标 agent；**非交互式**下须显式传 **`--agent <id>`**（可重复）或 **`--all-agents`**（装到当前检测到的全部此类 agent）。`arc skill install` 则为**全局**安装到 `~` 下各 agent 目录。校验 required skill 时，仅针对「支持项目级」的 agent 检查仓库内路径。
+`arc.toml` 中 `[skills] require` 为本仓库声明。`arc project apply` 会把 skill 落到**仓库内**下列路径（仅针对你选定的、已检测且支持项目级的 agent）：**交互式**下若确有缺失 skill 可装，会多选目标 agent；**非交互式**下须显式传 **`--agent <id>`**（可重复）或 **`--all-agents`**（装到当前检测到的全部此类 agent）。`arc skill install` 则为**全局**安装到 `~` 下各 agent 目录。`arc status` 与 `arc project apply` 的列表：前者区分「仓库内完全未出现」与「尚未在所有相关 agent 路径下复制」；后者在未全部落地时仍会尝试安装，直至每个支持项目级的已检测 agent 路径下都有对应 skill（或你仅选择部分 agent 时只写入选中目标）。
 
 | Agent | 仓库内项目级 skill 路径（`<repo>/…`） |
 |-------|----------------------------------------|
@@ -230,6 +243,8 @@ arc project edit
 | **交互式、有 `arc.toml`** | 多选写回；需同步再运行 `arc project apply` |
 | **交互式、无 `arc.toml`** | 报错，提示先 `arc project apply` |
 | **非交互式**（含 `--format json`） | `WriteResult` `ok: false`，不执行编辑 |
+
+`project edit` 会同步 `[[markets]]` 与当前选中的 market skill：不再被任何已选 skill 引用的自动关联 market 会从 `arc.toml` 移除；无关的现有 market 保留。
 
 ---
 

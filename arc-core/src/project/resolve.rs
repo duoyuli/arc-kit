@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::detect::{DetectCache, project_skills_satisfied_for_requirements};
+use crate::detect::{DetectCache, project_skills_satisfied_all, project_skills_satisfied_any};
 use crate::engine::InstallEngine;
 use crate::error::Result;
 use crate::models::ResourceKind;
@@ -33,18 +33,20 @@ pub struct EffectiveConfig {
     pub project_root: Option<PathBuf>,
     pub provider: Option<Sourced<String>>,
     pub required_skills: Vec<String>,
-    /// Required skills satisfied under the project tree for every install-target agent
-    /// (e.g. `<repo>/.claude/skills/<name>` per agent).
+    /// Required skills present under the project tree for **at least one** install-target agent.
     pub installed_skills: Vec<String>,
-    /// Required skills found in the registry but not yet installed.
+    /// Required skills in the catalog but not present under **any** project-local agent path.
+    pub missing_skills_absent: Vec<String>,
+    /// Required skills in the catalog but not yet replicated to **every** project-local agent path
+    /// (includes [`Self::missing_skills_absent`]).
     pub missing_installable: Vec<String>,
     /// Required skills not found in any source at all.
     pub missing_unavailable: Vec<String>,
 }
 
 impl EffectiveConfig {
-    /// True when there is nothing left to do (installable skills all installed).
-    /// Skills that are unavailable in all sources are excluded — we cannot act on them.
+    /// True when every required skill is replicated to all project-local agent paths (or global
+    /// install when there is no `arc.toml`). Unavailable skills are ignored.
     pub fn is_up_to_date(&self) -> bool {
         self.missing_installable.is_empty()
     }
@@ -123,7 +125,7 @@ pub fn resolve_effective_config(
         .and_then(|p| p.parent())
         .map(|p| p.to_path_buf());
 
-    let (installed_skills, missing_installable, missing_unavailable) =
+    let (installed_skills, missing_skills_absent, missing_installable, missing_unavailable) =
         classify_skills(cache, registry, &required_skills, project_root.as_deref());
 
     Ok(EffectiveConfig {
@@ -133,6 +135,7 @@ pub fn resolve_effective_config(
         provider,
         required_skills,
         installed_skills,
+        missing_skills_absent,
         missing_installable,
         missing_unavailable,
     })
@@ -162,47 +165,60 @@ fn resolve_provider(
     None
 }
 
-/// Split `required` into three buckets: installed, installable, unavailable.
+/// Split `required` into installed (any agent), absent (no project path), pending replication
+/// (`!all`), and unavailable.
 ///
-/// When `project_root` is set (`arc.toml` present), satisfaction is based on **project-local**
-/// skill dirs per agent. Otherwise (no project config) falls back to global user-home installs.
+/// When `project_root` is set (`arc.toml` present), **installed** uses at-least-one-agent
+/// presence; **missing_installable** uses not-on-all-agents (for `arc project apply`). Otherwise
+/// falls back to global user-home installs.
 fn classify_skills(
     cache: &DetectCache,
     registry: &SkillRegistry,
     required: &[String],
     project_root: Option<&Path>,
-) -> (Vec<String>, Vec<String>, Vec<String>) {
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
     let engine = InstallEngine::new(cache.clone());
     let mut installed = Vec::new();
+    let mut absent = Vec::new();
     let mut installable = Vec::new();
     let mut unavailable = Vec::new();
 
     for name in required {
-        let satisfied = if let Some(root) = project_root {
-            project_skills_satisfied_for_requirements(cache, root, name)
-        } else {
-            engine.is_installed(name, &ResourceKind::Skill)
-        };
-        if satisfied {
-            installed.push(name.clone());
-        } else if registry.find(name).is_some() {
-            installable.push(name.clone());
-        } else {
+        let Some(_) = registry.find(name) else {
             unavailable.push(name.clone());
+            continue;
+        };
+
+        if let Some(root) = project_root {
+            let any = project_skills_satisfied_any(cache, root, name);
+            let all = project_skills_satisfied_all(cache, root, name);
+            if any {
+                installed.push(name.clone());
+            } else {
+                absent.push(name.clone());
+            }
+            if !all {
+                installable.push(name.clone());
+            }
+        } else if engine.is_installed(name, &ResourceKind::Skill) {
+            installed.push(name.clone());
+        } else {
+            installable.push(name.clone());
         }
     }
 
-    (installed, installable, unavailable)
+    (installed, absent, installable, unavailable)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
 
     use tempfile::tempdir;
 
     use super::*;
-    use crate::detect::DetectCache;
+    use crate::detect::{AgentInfo, DetectCache};
     use crate::paths::ArcPaths;
     use crate::skill::SkillRegistry;
 
@@ -283,5 +299,66 @@ mod tests {
         let cfg = resolve_effective_config(&paths, proj.path(), &cache, &registry).unwrap();
         let err = cfg.provider_to_switch(&paths).unwrap_err();
         assert!(err.message.contains("no-such-profile-xyz"));
+    }
+
+    #[test]
+    fn partial_project_install_lists_installed_but_still_pending_replication() {
+        let home = tempdir().unwrap();
+        let proj = tempdir().unwrap();
+
+        fs::create_dir_all(home.path().join(".arc-cli/skills/partial-skill")).unwrap();
+        fs::write(
+            home.path().join(".arc-cli/skills/partial-skill/SKILL.md"),
+            "# partial\n",
+        )
+        .unwrap();
+
+        fs::write(
+            proj.path().join("arc.toml"),
+            "[skills]\nrequire = [\"partial-skill\"]\n",
+        )
+        .unwrap();
+
+        let claude_dir = proj.path().join(".claude/skills/partial-skill");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(claude_dir.join("SKILL.md"), "# x\n").unwrap();
+
+        let paths = ArcPaths::with_user_home(home.path());
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "claude".to_string(),
+            AgentInfo {
+                name: "claude".to_string(),
+                detected: true,
+                root: Some(paths.user_home().join(".claude")),
+                executable: Some("/fake/claude".to_string()),
+                version: Some("1".to_string()),
+            },
+        );
+        agents.insert(
+            "codex".to_string(),
+            AgentInfo {
+                name: "codex".to_string(),
+                detected: true,
+                root: Some(paths.user_home().join(".codex")),
+                executable: Some("/fake/codex".to_string()),
+                version: Some("1".to_string()),
+            },
+        );
+        let cache = DetectCache::from_map(agents);
+        let registry = SkillRegistry::new(paths.clone(), cache.clone());
+
+        let cfg = resolve_effective_config(&paths, proj.path(), &cache, &registry).unwrap();
+        assert!(
+            cfg.installed_skills.contains(&"partial-skill".to_string()),
+            "expected skill counted installed when present under one agent path"
+        );
+        assert!(cfg.missing_skills_absent.is_empty());
+        assert!(
+            cfg.missing_installable
+                .contains(&"partial-skill".to_string()),
+            "expected replication pending until all project-capable agents have the skill"
+        );
+        assert!(!cfg.is_up_to_date());
     }
 }
