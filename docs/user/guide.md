@@ -137,6 +137,7 @@ arc provider test --agent claude
 
 - **Claude** — profile 中除 `display_name` / `description` 外的字段写入 `~/.claude/settings.json` 的 `env`；切换时清除上一 provider 的变量。
 - **Codex** — `api_key` → `~/.codex/auth.json`，`base_url` → `~/.codex/config.toml` 的 `model_providers`。
+- **Backups** — 切换 provider 等写操作前，相关文件会备份到 `~/.arc-cli/backups/<年>/<月>/<日>/`；本地日期早于「今天 − 60 天」的会话目录会在后续备份时清理。
 
 ---
 
