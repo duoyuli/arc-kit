@@ -67,8 +67,8 @@ CLI 只分两类语义（详见 [交互与自动化设计](../developer/design.m
 
 除 `completion` 与已登记例外外，主要命令均支持 `--format json`：
 
-- **读取类**：`status`、`skill list`、`skill info`、`provider list`、`market list`、`provider test`
-- **写入类**：`skill install`、`skill uninstall`、`provider use`、`market add`、`market remove`、`market update`、`project apply`、`project edit`（*`project edit` 仅交互式；JSON 下返回 `ok: false` 错误，不执行编辑*）
+- **读取类**：`status`、`skill list`、`skill info`、`mcp list`、`mcp info`、`subagent list`、`subagent info`、`provider list`、`market list`、`provider test`
+- **写入类**：`skill install`、`skill uninstall`、`mcp install`、`mcp uninstall`、`subagent install`、`subagent uninstall`、`provider use`、`market add`、`market remove`、`market update`、`project apply`、`project edit`（*`project edit` 仅交互式；JSON 下返回 `ok: false` 错误，不执行编辑*）
 
 **约定**：只读命令须实现 `--format json`（例外见 [交互与自动化设计](../developer/design.md)，如 **`arc version`**）。带向导的写入命令须在**非交互式**下提供**显式参数**，以便一键执行、不读 stdin。写入类 JSON 使用统一 `WriteResult`（`ok` / `message` / `items`）。`arc project apply` / `project edit` 的边界情况见下文 [project apply](#project-apply) / [project edit](#project-edit)。
 
@@ -78,11 +78,14 @@ CLI 只分两类语义（详见 [交互与自动化设计](../developer/design.m
 
 ## status
 
-查看当前状态快照，固定分成三个模块：
+查看当前状态快照，固定分成六个模块：
 
 - `Project`：当前仓库的 `arc.toml`、required skills 落地进度、项目级 provider 对齐情况
 - `Agents`：当前机器检测到的 agent、版本、active provider、全局 skill 数
 - `Catalog`：market 数量、resource 总量、全局 skill 总量
+- `MCPs`：全局/项目 MCP 的 rollout、scope 与 drift
+- `Subagents`：全局/项目 subagent 的 rollout 与 drift
+- `Actions`：建议下一步命令
 
 若存在 `arc.toml`，从**当前工作目录向上**查找最近的配置文件（子目录可继承上级项目）。
 
@@ -135,8 +138,10 @@ arc provider test --agent claude
 
 `arc provider test` 会向 API 端点探测连通性；任一受测项失败则**退出码 1**（含 `--format json`）；请同时查看 JSON 中每项的 `ok`。
 
+`arc provider use <name>` 只会切换**一个解析后的 provider profile**。若同名 profile 同时存在于多个 agent（例如 `official` 同时存在于 Claude 与 Codex），命令会报歧义并要求显式传 `--agent`。若要按项目对齐 provider，使用 `[provider]` + `arc project apply`。
+
 - **Claude** — profile 中除 `display_name` / `description` 外的字段写入 `~/.claude/settings.json` 的 `env`；切换时清除上一 provider 的变量。
-- **Codex** — `api_key` → `~/.codex/auth.json`，`base_url` → `~/.codex/config.toml` 的 `model_providers`。
+- **Codex** — 中转站 profile 的 `api_key` 会写入 `~/.codex/auth.json`，`base_url` 会原子写入 `~/.codex/config.toml` 的 `model_provider` / `model_providers`。仅含 `display_name` / `description` 的官方 auth profile 在切离时会自动保存当前 `auth.json` 快照，后续切回时优先恢复该快照。
 - **Backups** — 切换 provider 等写操作前，相关文件会备份到 `~/.arc-cli/backups/<年>/<月>/<日>/`；本地日期早于「今天 − 60 天」的会话目录会在后续备份时清理。
 
 ---
@@ -174,8 +179,6 @@ arc skill uninstall my-skill --agent claude
 arc skill info my-skill
 ```
 
-**已知偏差**：`arc skill info <name> --format json` 在 skill **不存在**时直接报错退出，stdout 无 JSON。
-
 ### Skill 来源
 
 | 来源 | 路径 | 说明 |
@@ -204,9 +207,53 @@ arc skill info my-skill
 
 ---
 
+## mcp
+
+管理全局 MCP 定义。裸调用 `arc mcp` 等同于 `arc mcp list`。
+
+```bash
+arc mcp list
+arc mcp info github
+
+arc mcp install github --transport stdio --command npx --arg @modelcontextprotocol/server-github
+arc mcp install github --agent claude --agent cursor --transport streamable-http --url https://example.com/mcp
+arc mcp uninstall github
+```
+
+- `arc mcp install` 只管理**全局**定义；项目级 MCP 请写入 `arc.toml` 的 `[[mcps]]`，再执行 `arc project apply`。
+- `--agent` 可重复；不传时表示写入所有支持该资源类型的 agent。
+- CLI 参数中的 transport 取值为 `stdio`、`sse`、`streamable-http`；写入 `arc.toml` 时使用 TOML 枚举值 `stdio`、`sse`、`streamable_http`。
+- `stdio` transport 必须提供 `--command`，不能提供 `--url`；远程 transport（`sse` / `streamable-http`）必须提供 `--url`，不能提供 `--command`。
+- `--env KEY=VALUE` 与 `--header KEY=VALUE` 支持重复传入；涉及 secret 的键（如 `token`、`authorization`、`api_key`）必须使用环境变量占位符，例如 `${GITHUB_TOKEN}` 或 `Bearer ${GITHUB_TOKEN}`。
+
+项目级 MCP 在 `arc status` / `arc status --format json` 中会显示 `desired_scope` 与 `applied_scope`。对于只支持全局配置的 agent（例如 OpenClaw），默认会标记为 `skipped` / `requires_global_fallback`；显式传 `arc project apply --allow-global-fallback`，或在 `arc.toml` 的对应 `[[mcps]]` 下声明 `scope_fallback = "global"` 后，才会落到全局配置路径。
+
+---
+
+## subagent
+
+管理全局 subagent 定义。裸调用 `arc subagent` 等同于 `arc subagent list`。
+
+```bash
+arc subagent list
+arc subagent info reviewer
+
+arc subagent install reviewer --prompt-file ./reviewer.md
+arc subagent install reviewer --agent claude --agent codex --description "Code review helper" --prompt-file ./reviewer.md
+arc subagent uninstall reviewer
+```
+
+- `arc subagent install` 只管理**全局**定义；项目级 subagent 请写入 `arc.toml` 的 `[[subagents]]`，再执行 `arc project apply`。
+- `--prompt-file` 为必填；全局安装时读取命令行给出的文件内容并写入 agent 的全局 subagent 目录。
+- `--agent` 可重复；不传时表示写入所有支持原生 subagent 的 agent。
+- 项目级 `[[subagents]]` 的 `prompt_file` 相对路径以项目根目录为基准解析。
+- 并非所有 agent 都支持 subagent。当前原生支持以 `arc status` 的 `subagent_supported` / `subagent` 字段为准。
+
+---
+
 ## project apply
 
-无 `arc.toml` 时：在**交互式**下先多选技能并写入 `arc.toml`，再安装 skill、切换 provider；**已有 `arc.toml`** 则只执行安装与切换。从当前目录向上查找 `arc.toml`。
+无 `arc.toml` 时：在**交互式**下先多选技能并写入 `arc.toml`，再安装项目级 skill、切换 provider，并应用项目级 MCP / subagent；**已有 `arc.toml`** 则直接执行这些步骤。从当前目录向上查找 `arc.toml`。
 
 ```bash
 arc project apply
@@ -222,8 +269,9 @@ arc project apply
 | **有待装 skill、非交互式、未传 `--agent` / `--all-agents`** | 退出码 1，提示须指定目标 |
 
 `--agent` 与 `--all-agents` 互斥。
+命令行 `--agent` 与 `arc.toml` / 全局资源定义中的 `targets = [...]` 只能填写受支持的 agent id；拼写错误会直接报错，不会被当作“未检测到 agent”静默跳过。
 
-**应用阶段步骤**：解析 `arc.toml`；**自动添加 `[[markets]]` 中声明且本地尚未配置的 market 源**；校验 provider 存在；若已激活则跳过切换；在文本模式下先列出 `require` 中每个 skill 的状态（**present (project)** / **will install** / **not in catalog**）；若未检测到任何支持项目级 skill 的 agent，则提前报错退出；若有缺失且可安装的 skill，则解析目标 agent 后安装；警告不可用 skill；输出结果。
+**应用阶段步骤**：解析 `arc.toml`；**自动添加 `[[markets]]` 中声明且本地尚未配置的 market 源**；校验 provider 存在；若已激活则跳过切换；在文本模式下先列出 `require` 中每个 skill 的状态（**present (project)** / **will install** / **not in catalog**）；若未检测到任何支持项目级 skill 的 agent，则提前报错退出；若有缺失且可安装的 skill，则解析目标 agent 后安装；随后应用项目级 `[[mcps]]` 与 `[[subagents]]`，并对已从 `targets` 中移除的 agent 做 shrink 清理；警告不可用 skill；输出结果。
 
 **`[[markets]]` 自动添加**：`arc.toml` 中声明的 market 源（`url` 必填）会在 `arc project apply` 时自动添加到本地配置，重复的 market（按 URL 生成的 id 判断）会自动跳过，不会报错。
 
@@ -255,6 +303,8 @@ arc project edit
 # arc.toml — arc-kit project configuration
 # Safe to commit. Contains no secrets.
 
+version = 1
+
 [provider]
 name = "aicodemirror"
 
@@ -269,9 +319,39 @@ require = [
   "architecture-review",
   "db-migration",
 ]
+
+[[mcps]]
+name = "filesystem"
+targets = ["claude", "codex"]
+transport = "stdio"
+command = "npx"
+args = ["@modelcontextprotocol/server-filesystem", "."]
+
+[[subagents]]
+name = "reviewer"
+targets = ["claude", "codex"]
+prompt_file = "reviewer.md"
 ```
 
 所有 section 可选，空文件合法。未知字段（如 `api_key`）会导致解析失败（退出码 1）。
+
+### `version` — 配置版本
+
+当前固定为 `1`；省略时也会按 `1` 解析。
+
+### `[provider]` — 项目级 provider 对齐
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | 否 | 要对齐的 provider profile 名称 |
+
+只会作用于支持 provider 的 agent（当前为 Claude Code 与 Codex）。若同名 provider 在多个 agent 中都存在，`arc project apply` 会分别对命中的 agent 执行切换。
+
+### `[skills]` — 项目级 skill 依赖
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `require` | 否 | 需要在项目内落地的 skill 名称列表 |
 
 ### `[[markets]]` — 项目级 Market 源
 
@@ -282,6 +362,57 @@ require = [
 | `url` | 是 | Git 仓库地址（HTTPS 或 SSH） |
 
 重复的 market（按 URL 自动生成的 id 判断）会自动跳过，不会重复添加。
+
+### `[[mcps]]` — 项目级 MCP 定义
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | 是 | MCP 名称，需匹配 `^[a-z0-9][a-z0-9-_]{0,63}$` |
+| `targets` | 否 | 目标 agent id 列表；省略时按支持该资源类型的 agent 解析 |
+| `transport` | 是 | `stdio`、`sse` 或 `streamable_http` |
+| `command` | `stdio` 必填 | 本地命令 |
+| `args` | 否 | 命令参数列表 |
+| `env` | 否 | 环境变量映射 |
+| `url` | 远程 transport 必填 | SSE / Streamable HTTP 地址 |
+| `headers` | 否 | 请求头映射 |
+| `description` | 否 | 人类可读描述 |
+| `scope_fallback` | 否 | 仅项目级 MCP 可用；当前只支持 `"global"` |
+
+- `targets` 只能填写受支持的 agent id；拼写错误会直接报错。
+- `stdio` 不能同时设置 `url`；`sse` / `streamable_http` 不能同时设置 `command`。
+- `env` / `headers` 中涉及 secret 的键必须使用环境变量占位符，例如 `${API_KEY}` 或 `Bearer ${API_KEY}`。
+- 对只支持全局 MCP 配置的 agent，可用 `scope_fallback = "global"` 单独声明 fallback；也可在命令行统一传 `--allow-global-fallback`。
+
+示例：
+
+```toml
+[[mcps]]
+name = "github"
+targets = ["claude", "openclaw"]
+transport = "streamable_http"
+url = "https://api.github.com/mcp"
+headers = { authorization = "Bearer ${GITHUB_TOKEN}" }
+scope_fallback = "global"
+```
+
+### `[[subagents]]` — 项目级 subagent 定义
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | 是 | subagent 名称，需匹配 `^[a-z0-9][a-z0-9-_]{0,63}$` |
+| `description` | 否 | 人类可读描述 |
+| `targets` | 否 | 目标 agent id 列表；省略时按支持该资源类型的 agent 解析 |
+| `prompt_file` | 是 | 提示词文件路径；相对路径相对于项目根目录 |
+
+示例：
+
+```toml
+[[subagents]]
+name = "reviewer"
+targets = ["claude", "codex"]
+description = "Repository reviewer"
+prompt_file = "reviewer.md"
+```
 
 ---
 

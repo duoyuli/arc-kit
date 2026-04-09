@@ -14,6 +14,6 @@ docs/
 
 | 路径 | 说明 |
 |------|------|
-| [user/guide.md](user/guide.md) | 安装与验证、全局选项、各子命令、`arc.toml`、补全 |
+| [user/guide.md](user/guide.md) | 安装与验证、全局选项、provider / market / skill / MCP / subagent / project、`arc.toml`、补全 |
 | [developer/design.md](developer/design.md) | 交互式与非交互式、JSON 约定、设计规则、实现对照与缺口 |
 | [developer/development.md](developer/development.md) | 贡献流程、提交与回归、Cargo workspace、路线图 |

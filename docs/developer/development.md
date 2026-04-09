@@ -40,7 +40,7 @@ cargo run -p arc-cli -- --help
 cargo run -p arc-cli -- status
 ```
 
-与根目录 `CLAUDE.md` / `AGENTS.md` 中「提交前」要求一致。
+与根目录 `AGENTS.md` 中「提交前」要求一致。
 
 ## 发版前完整回归
 
@@ -50,7 +50,11 @@ cargo run -p arc-cli -- status
 ./scripts/regression.sh
 ```
 
-脚本内容：`cargo fmt --all --check`、`check`、`clippy -D warnings`、`test`，以及在**隔离 `ARC_KIT_USER_HOME`** 且**工作目录无 `arc.toml`** 下的 CLI 黑盒（避免在 arc-kit 仓库根直接跑 `status` 命中仓库内 `arc.toml`）。
+脚本内容：`cargo fmt --all --check`、`check`、`clippy -D warnings`、`test`，以及在**隔离 `ARC_KIT_USER_HOME`** 下的 CLI 黑盒。除空目录 smoke 外，还覆盖：
+- `status --format json` 的模块存在性（含 `mcps` / `subagents` / `actions`）
+- `skill install` / `skill uninstall` / `provider use` 在 `--format json` 下的非交互缺参失败
+- `skill info` / `mcp info` / `subagent info` 的结构化 JSON 错误
+- `project apply` 的 project capability 安装、target shrink 清理、以及 global fallback 后的 `status` 反映
 
 ### 回归适用范围
 
@@ -62,13 +66,13 @@ cargo run -p arc-cli -- status
 
 ### 黑盒矩阵（脚本已覆盖核心项）
 
-手动补充时可在隔离环境下核对：`--help`、`version`、`status`、`status --format json`、`project --help`、`skill list`、`market list`、`provider list`、`completion zsh` 等。
+手动补充时可在隔离环境下核对：`--help`、`version`、`status`、`status --format json`、`project --help`、`skill list`、`mcp list`、`subagent list`、`market list`、`provider list`、`completion zsh`，以及 `project apply` 的 capability 回归场景。
 
 若改动触及 **provider 连通性**、**market 拉取** 或 **JSON 语义**，追加 `provider test` 及相应子命令的 `--format json` 与退出码（见 [交互与自动化设计](design.md)）。
 
 ### 退出准则
 
-完整回归通过：`fmt --check`、`check`、`clippy`、`test` 全部成功，且 `./scripts/regression.sh` 退出码 `0`。再打 tag。发版流程（版本号、`main` 与 tag 分步推送）见根目录 `CLAUDE.md`。
+完整回归通过：`fmt --check`、`check`、`clippy`、`test` 全部成功，且 `./scripts/regression.sh` 退出码 `0`。再打 tag。发版流程（版本号、`main` 与 tag 分步推送）见根目录 `AGENTS.md`。
 
 ---
 
@@ -77,7 +81,7 @@ cargo run -p arc-cli -- status
 ```text
 .
 ├── arc-cli/          # CLI、clap、用户输出、format JSON
-├── arc-core/         # 领域逻辑、安装引擎、provider、market、skill、detect
+├── arc-core/         # 领域逻辑、安装引擎、provider、market、skill、mcp、subagent、detect
 ├── arc-tui/          # 交互 UI（仅本 crate 依赖 dialoguer）
 ├── built-in/         # 内置 skill 与 market 索引
 ├── docs/             # 官方文档（分层见 docs/README.md）
@@ -89,14 +93,14 @@ cargo run -p arc-cli -- status
 ### 模块职责摘要
 
 - **arc-cli**：`app` 编排、`cli` 命令表、`commands/*`、`format.rs` JSON 结构体。
-- **arc-core**：`CodingAgentSpec` 与 `detect`、`engine` + `adapters`、`skill` 三源注册表、`market`、`provider`、`paths`、`io`。
+- **arc-core**：`CodingAgentSpec` 与 `detect`、`engine` + `adapters`、`skill` 三源注册表、`capability`（mcp / subagent canonical source、tracking、落地）、`market`、`provider`、`paths`、`io`。
 - **arc-tui**：模糊搜索、skill/provider 向导、主题。
 
 ---
 
 ## 路线图备忘
 
-- **P0**：`provider` / `market` / `skill` 行为稳定；改动必带测试。
+- **P0**：`provider` / `market` / `skill` / `mcp` / `subagent` 行为稳定；改动必带测试。
 - **P1**：market / provider 黑盒与边界测试加强。
 - **P2**：配置与 provider schema 文档化（持续）。
 
