@@ -1,3 +1,4 @@
+use arc_core::capability::{AppliedScope, CapabilityStatusEntry, DesiredScope};
 use serde::Serialize;
 
 use arc_core::error::ArcError;
@@ -7,7 +8,7 @@ use arc_core::status::{
 
 // ── Schema version ────────────────────────────────────────
 // Bump when a breaking change is made to any JSON schema.
-pub const SCHEMA_VERSION: &str = "3";
+pub const SCHEMA_VERSION: &str = "4";
 
 // ── status ────────────────────────────────────────────────
 
@@ -17,6 +18,8 @@ pub struct StatusOutput {
     pub project: ProjectStatusSection,
     pub agents: Vec<AgentRuntimeStatus>,
     pub catalog: CatalogStatus,
+    pub mcps: Vec<CapabilityStatusEntry>,
+    pub subagents: Vec<CapabilityStatusEntry>,
     pub actions: Vec<RecommendedAction>,
 }
 
@@ -46,6 +49,71 @@ pub struct SkillInfoOutput {
     pub summary: String,
     pub installed_targets: Vec<String>,
     pub source_path: String,
+}
+
+// ── mcp ───────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct McpListOutput {
+    pub schema_version: &'static str,
+    pub mcps: Vec<McpItem>,
+}
+
+#[derive(Serialize)]
+pub struct McpItem {
+    pub name: String,
+    pub transport: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct McpInfoOutput {
+    pub schema_version: &'static str,
+    pub name: String,
+    pub transport: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub headers: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+}
+
+// ── subagent ──────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SubagentListOutput {
+    pub schema_version: &'static str,
+    pub subagents: Vec<SubagentItem>,
+}
+
+#[derive(Serialize)]
+pub struct SubagentItem {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+    pub prompt_file: String,
+}
+
+#[derive(Serialize)]
+pub struct SubagentInfoOutput {
+    pub schema_version: &'static str,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+    pub prompt_file: String,
 }
 
 // ── provider list ─────────────────────────────────────────
@@ -115,9 +183,24 @@ pub struct WriteResult {
 
 #[derive(Serialize)]
 pub struct WriteResultItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_kind: Option<String>,
     pub name: String,
     pub agent: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desired_scope: Option<DesiredScope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_scope: Option<AppliedScope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ErrorOutput {
+    pub schema_version: &'static str,
+    pub ok: bool,
+    pub error: String,
 }
 
 // ── helper ────────────────────────────────────────────────
@@ -164,6 +247,9 @@ mod tests {
                 global_skill_count: 3,
                 supports_project_skills: true,
                 supports_provider: true,
+                mcp_scope_supported: "project_native".to_string(),
+                mcp_transports_supported: vec!["stdio".to_string(), "streamable_http".to_string()],
+                subagent_supported: "native".to_string(),
             }],
             catalog: CatalogStatus {
                 market_count: 1,
@@ -171,6 +257,8 @@ mod tests {
                 global_skill_count: 3,
                 unhealthy_market_count: 0,
             },
+            mcps: vec![],
+            subagents: vec![],
             actions: vec![],
         };
         let json = serde_json::to_value(&out).unwrap();
@@ -191,6 +279,7 @@ mod tests {
                 global_skill_count: 0,
                 unhealthy_market_count: 0,
             },
+            mcps: vec![],
             project: ProjectStatusSection {
                 state: ProjectState::Active,
                 name: "my-project".to_string(),
@@ -224,6 +313,7 @@ mod tests {
                     }],
                 }),
             },
+            subagents: vec![],
             actions: vec![RecommendedAction {
                 severity: ActionSeverity::Info,
                 message: "All good".to_string(),
@@ -295,9 +385,13 @@ mod tests {
             ok: true,
             message: "Done.".to_string(),
             items: vec![WriteResultItem {
+                resource_kind: None,
                 name: "my-skill".to_string(),
                 agent: "claude".to_string(),
                 status: "installed".to_string(),
+                desired_scope: None,
+                applied_scope: None,
+                reason: None,
             }],
         };
         let json = serde_json::to_value(&out).unwrap();

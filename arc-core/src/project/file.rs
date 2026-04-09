@@ -2,6 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::capability::{McpDefinition, SubagentDefinition};
 use crate::error::{ArcError, Result};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,6 +16,10 @@ pub struct ProjectConfig {
     pub skills: SkillsSection,
     #[serde(default)]
     pub markets: Vec<MarketEntry>,
+    #[serde(default)]
+    pub mcps: Vec<McpDefinition>,
+    #[serde(default)]
+    pub subagents: Vec<SubagentDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +116,8 @@ require = ["architecture-review", "db-migration"]
         .unwrap();
         assert_eq!(cfg.provider.name.as_deref(), Some("aicodemirror"));
         assert_eq!(cfg.skills.require.len(), 2);
+        assert!(cfg.mcps.is_empty());
+        assert!(cfg.subagents.is_empty());
     }
 
     #[test]
@@ -119,6 +126,8 @@ require = ["architecture-review", "db-migration"]
         assert_eq!(cfg.version, 1);
         assert_eq!(cfg.provider.name, None);
         assert!(cfg.skills.require.is_empty());
+        assert!(cfg.mcps.is_empty());
+        assert!(cfg.subagents.is_empty());
     }
 
     #[test]
@@ -158,5 +167,26 @@ url = "https://github.com/anthropics/skills.git"
     fn empty_markets_is_valid() {
         let cfg = parse_project_config("").unwrap();
         assert!(cfg.markets.is_empty());
+    }
+
+    #[test]
+    fn parses_capability_resources() {
+        let cfg = parse_project_config(
+            r#"
+[[mcps]]
+name = "github"
+transport = "streamable_http"
+url = "https://example.com/mcp"
+
+[[subagents]]
+name = "reviewer"
+prompt_file = ".arc/subagents/reviewer.md"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.mcps.len(), 1);
+        assert_eq!(cfg.subagents.len(), 1);
+        assert_eq!(cfg.mcps[0].name, "github");
+        assert_eq!(cfg.subagents[0].name, "reviewer");
     }
 }

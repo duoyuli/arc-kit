@@ -8,6 +8,11 @@
 #   description   简要描述
 #   base_url      API 地址（中转站必填）
 #   api_key       OpenAI API Key（中转站必填）
+#
+# 说明：
+#   仅有 display_name / description 的 profile 视为官方 auth 登录。
+#   arc 在切离这类 profile 时，会自动保存当前 ~/.codex/auth.json 快照，
+#   后续切回时优先恢复该快照；通常不需要手动编辑 auth_json。
 
 [official]
 display_name = "OpenAI"

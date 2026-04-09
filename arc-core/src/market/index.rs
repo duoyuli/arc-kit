@@ -116,7 +116,7 @@ impl MarketIndexStore {
 
     pub fn load_effective(&self) -> MarketIndexDocument {
         match self.load_cached() {
-            Ok(document) if !document.repos.is_empty() => document,
+            Ok(document) => document,
             _ => self.load_embedded(),
         }
     }

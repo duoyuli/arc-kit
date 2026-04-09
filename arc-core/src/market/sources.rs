@@ -75,7 +75,16 @@ impl MarketSourceRegistry {
         source_id: &str,
         patch: MarketSourcePatch,
     ) -> std::io::Result<Option<MarketSource>> {
-        let Some(mut source) = self.get(source_id) else {
+        let mut local_sources = self.load_local();
+        let source_was_local = local_sources.contains_key(source_id);
+        let builtin_sources = MarketIndexStore::new(self.paths.clone())
+            .load_effective()
+            .to_market_sources();
+        let Some(mut source) = local_sources
+            .get(source_id)
+            .cloned()
+            .or_else(|| builtin_sources.get(source_id).cloned())
+        else {
             return Ok(None);
         };
         if let Some(git_url) = patch.git_url {
@@ -100,9 +109,10 @@ impl MarketSourceRegistry {
             source.resource_count = resource_count;
         }
         let updated = source;
-        let mut sources = self.load_local();
-        sources.insert(source_id.to_string(), updated.clone());
-        self.save(&sources)?;
+        if source_was_local || !builtin_sources.contains_key(source_id) {
+            local_sources.insert(source_id.to_string(), updated.clone());
+            self.save(&local_sources)?;
+        }
         Ok(Some(updated))
     }
 

@@ -1,7 +1,7 @@
-use arc_core::detect::coding_agent_spec;
+use arc_core::agent::agent_spec;
 
 pub fn agent_display_name(agent_id: &str) -> &str {
-    coding_agent_spec(agent_id)
+    agent_spec(agent_id)
         .map(|spec| spec.display_name)
         .unwrap_or(agent_id)
 }

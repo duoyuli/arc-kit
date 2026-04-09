@@ -69,9 +69,12 @@ arc market update       拉取并重建索引，并维护全局 skill 安装
 arc skill list          列出 skill；--installed 仅已安装
 arc skill install       交互式；或 arc skill install <name> [-a|--agent …]
 arc skill uninstall …   [-a|--agent …] 或 --all
-arc skill info <name>   详情（skill 不存在时 --format json 可能无 JSON 直接报错，见用户手册）
+arc skill info <name>   详情（不存在时 `--format json` 返回结构化 ErrorOutput）
 
-arc project apply       [--agent <id> ... | --all-agents]；无 arc.toml 时交互下可创建；有 arc.toml 时按配置安装 skill、切换 provider
+arc mcp list / info / install / uninstall
+arc subagent list / info / install / uninstall
+
+arc project apply       [--agent <id> ... | --all-agents]；无 arc.toml 时交互下可创建；有 arc.toml 时按配置安装 skill、切换 provider、应用项目级 MCP / subagent
 arc project edit        交互式编辑 [skills] require
 ```
 
@@ -87,6 +90,8 @@ arc provider --format json
 arc provider test --format json
 arc skill list --installed --format json
 arc skill info <name> --format json
+arc mcp list --format json
+arc subagent list --format json
 arc market list --format json
 arc project apply --format json --agent codex
 ```
@@ -143,7 +148,8 @@ api_key = "sk-xxx"
 - 有 `base_url` 时写入 `~/.codex/config.toml` 的 `model_provider` + `model_providers.<name>`
 - 无 `base_url` 时清除 `model_provider`（回到官方直连）
 - `api_key` 写入 `~/.codex/auth.json`
-- 当前切换逻辑只实际消费 `api_key` / `base_url`；不要把额外字段当成已生效配置。
+- 仅含 `display_name` / `description` 的官方 auth provider，会在切离时自动快照当前 `auth.json`，切回时优先恢复该快照
+- `config.toml` 仍按结构化字段原子改写，不做整份 live snapshot 恢复
 
 ### 切换与探测
 
@@ -189,7 +195,7 @@ arc skill uninstall my-skill -a claude
 - 非交互模式下，`install` / `uninstall` 都必须给 skill 名。
 - `arc skill install <name>` 未传 `--agent` 时，会安装到默认目标集合；给 agent 执行时，优先显式传 `--agent` 以避免装得过宽。
 - `arc skill uninstall <name>` 未传 `--agent` 且未传 `--all` 时，会按“当前已安装目标”移除；若本来没装，会返回成功语义并提示 `not installed`。
-- `arc skill info <name> --format json` 在 skill 不存在时，当前实现会直接报错，stdout 不保证有 JSON。
+- `arc skill info <name> --format json` 在 skill 不存在时，会返回结构化 `ErrorOutput` JSON。
 
 ### 项目级 vs 全局（`arc project apply`）
 
@@ -230,6 +236,7 @@ arc market update                  # 拉取并重新扫描；并维护全局 ski
 - 已有 `arc.toml` 且存在缺失 skill：交互式可选目标 agent；非交互必须传 `--agent <id>`（可重复）或 `--all-agents`。
 - `--agent` 与 `--all-agents` 互斥。
 - `[[markets]]` 中声明但本地尚未配置的源，会在 `arc project apply` 时自动补到本地 market 配置。
+- `arc project apply` 还会应用项目级 `[[mcps]]` 与 `[[subagents]]`，并在 target shrink 时移除不再声明的项目资源。
 - `arc project edit` 仅交互式；若用户在 CI、管道或 JSON 模式下要求编辑，应改为直接修改 `arc.toml` 文件，而不是调用该命令。
 
 ## 排障速查

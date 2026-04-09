@@ -50,6 +50,16 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<SkillCommand>,
     },
+    #[command(about = "Manage MCP servers")]
+    Mcp {
+        #[command(subcommand)]
+        command: Option<McpCommand>,
+    },
+    #[command(about = "Manage subagents")]
+    Subagent {
+        #[command(subcommand)]
+        command: Option<SubagentCommand>,
+    },
     #[command(about = "Manage providers")]
     Provider {
         #[command(subcommand)]
@@ -75,6 +85,9 @@ pub struct ProjectApplyArgs {
     /// Install to every detected agent that supports project-local skills (previous default)
     #[arg(long)]
     pub all_agents: bool,
+    /// Allow project MCPs to fall back to global-only agent config paths
+    #[arg(long)]
+    pub allow_global_fallback: bool,
 }
 
 #[derive(Subcommand)]
@@ -115,6 +128,95 @@ pub enum SkillCommand {
     Uninstall(SkillUninstallArgs),
     #[command(about = "Show skill details")]
     Info(SkillInfoArgs),
+}
+
+#[derive(Subcommand)]
+pub enum McpCommand {
+    #[command(about = "List global MCP definitions")]
+    List,
+    #[command(about = "Show global MCP details")]
+    Info(McpInfoArgs),
+    #[command(about = "Install or update a global MCP definition")]
+    Install(McpInstallArgs),
+    #[command(about = "Remove a global MCP definition")]
+    Uninstall(McpUninstallArgs),
+}
+
+#[derive(Args)]
+pub struct McpInfoArgs {
+    #[arg(help = "MCP name")]
+    pub name: String,
+}
+
+#[derive(Args)]
+pub struct McpInstallArgs {
+    #[arg(help = "MCP name")]
+    pub name: String,
+    #[arg(short, long = "agent", value_name = "AGENT")]
+    pub agent: Vec<String>,
+    #[arg(long, value_enum)]
+    pub transport: McpTransportArg,
+    #[arg(long)]
+    pub command: Option<String>,
+    #[arg(long = "arg", allow_hyphen_values = true)]
+    pub arg: Vec<String>,
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+    #[arg(long)]
+    pub url: Option<String>,
+    #[arg(long = "header", value_name = "KEY=VALUE")]
+    pub header: Vec<String>,
+    #[arg(long)]
+    pub description: Option<String>,
+}
+
+#[derive(Args)]
+pub struct McpUninstallArgs {
+    #[arg(help = "MCP name")]
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum McpTransportArg {
+    Stdio,
+    Sse,
+    StreamableHttp,
+}
+
+#[derive(Subcommand)]
+pub enum SubagentCommand {
+    #[command(about = "List global subagent definitions")]
+    List,
+    #[command(about = "Show global subagent details")]
+    Info(SubagentInfoArgs),
+    #[command(about = "Install or update a global subagent definition")]
+    Install(SubagentInstallArgs),
+    #[command(about = "Remove a global subagent definition")]
+    Uninstall(SubagentUninstallArgs),
+}
+
+#[derive(Args)]
+pub struct SubagentInfoArgs {
+    #[arg(help = "Subagent name")]
+    pub name: String,
+}
+
+#[derive(Args)]
+pub struct SubagentInstallArgs {
+    #[arg(help = "Subagent name")]
+    pub name: String,
+    #[arg(short, long = "agent", value_name = "AGENT")]
+    pub agent: Vec<String>,
+    #[arg(long)]
+    pub description: Option<String>,
+    #[arg(long = "prompt-file", value_name = "PATH")]
+    pub prompt_file: String,
+}
+
+#[derive(Args)]
+pub struct SubagentUninstallArgs {
+    #[arg(help = "Subagent name")]
+    pub name: String,
 }
 
 #[derive(Args)]

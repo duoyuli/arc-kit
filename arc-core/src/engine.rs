@@ -6,10 +6,8 @@ use log::info;
 
 use crate::adapters::base::{AgentContext, Snapshot};
 use crate::adapters::registry::all_resource_adapters;
-use crate::detect::{
-    DetectCache, SkillInstallStrategy, coding_agent_spec, project_skill_path,
-    resource_install_subdir,
-};
+use crate::agent::{SkillInstallStrategy, agent_spec, project_skill_path, resource_install_subdir};
+use crate::detect::DetectCache;
 use crate::error::{ArcError, Result};
 use crate::models::{ResourceInfo, ResourceKind};
 
@@ -110,7 +108,7 @@ impl InstallEngine {
                     format!("Install {target} first or choose a different agent"),
                 )
             })?;
-            let spec = coding_agent_spec(target.as_str()).ok_or_else(|| {
+            let spec = agent_spec(target.as_str()).ok_or_else(|| {
                 ArcError::new(format!("unknown agent id '{target}' for project install"))
             })?;
             let dest = project_skill_path(project_root, target, name).ok_or_else(|| {

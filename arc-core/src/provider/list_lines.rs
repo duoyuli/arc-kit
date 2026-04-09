@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use console::{Alignment, measure_text_width, pad_str};
 
-use crate::detect::coding_agent_spec;
+use crate::agent::agent_spec;
 use crate::provider::{ProviderInfo, supported_provider_agents};
 
 #[derive(Debug, Clone)]
@@ -36,7 +36,7 @@ pub fn build_provider_list_lines(
         if group.is_empty() {
             continue;
         }
-        let agent_display = coding_agent_spec(agent)
+        let agent_display = agent_spec(agent)
             .map(|s| s.display_name.to_string())
             .unwrap_or_else(|| agent.to_string());
         lines.push(ProviderListLine::AgentHeader { agent_display });

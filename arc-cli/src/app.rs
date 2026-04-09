@@ -1,8 +1,10 @@
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use crate::cli::{Cli, Commands, ProjectCommand, SkillCommand, SkillListArgs};
-use crate::commands::{apply, edit, market, provider, skill, status};
+use crate::cli::{
+    Cli, Commands, McpCommand, ProjectCommand, SkillCommand, SkillListArgs, SubagentCommand,
+};
+use crate::commands::{apply, edit, market, mcp, provider, skill, status, subagent};
 use arc_core::error::ArcError;
 use arc_core::{ArcPaths, DetectCache};
 use clap::{CommandFactory, Parser};
@@ -47,8 +49,6 @@ pub fn run() -> Result<(), ArcError> {
         .ensure_arc_home()
         .map_err(|e| ArcError::new(format!("failed to initialize state directory: {e}")))?;
     init_logger(&paths, cli.verbose);
-    let cache = DetectCache::new(&paths);
-    arc_core::seed_default_providers(&paths, &cache);
 
     if std::io::stderr().is_terminal() && !paths.home().join("completions").exists() {
         eprintln!(
@@ -59,20 +59,43 @@ pub fn run() -> Result<(), ArcError> {
     }
 
     match cli.command {
-        Some(Commands::Status) => status::run(&paths, &cache, &fmt),
+        Some(Commands::Status) => {
+            let cache = DetectCache::new(&paths);
+            status::run(&paths, &cache, &fmt)
+        }
         Some(Commands::Market { command }) => market::run(
             &paths,
             command.unwrap_or(crate::cli::MarketCommand::List),
             &fmt,
         ),
         Some(Commands::Skill { command }) => {
+            let cache = DetectCache::new(&paths);
             let cmd = command.unwrap_or(SkillCommand::List(SkillListArgs { installed: false }));
             skill::run(&paths, &cache, cmd, &fmt)
         }
-        Some(Commands::Provider { command }) => provider::run(&paths, command, &fmt),
+        Some(Commands::Mcp { command }) => {
+            let cache = DetectCache::new(&paths);
+            let cmd = command.unwrap_or(McpCommand::List);
+            mcp::run(&paths, &cache, cmd, &fmt)
+        }
+        Some(Commands::Subagent { command }) => {
+            let cache = DetectCache::new(&paths);
+            let cmd = command.unwrap_or(SubagentCommand::List);
+            subagent::run(&paths, &cache, cmd, &fmt)
+        }
+        Some(Commands::Provider { command }) => {
+            let cache = DetectCache::new(&paths);
+            provider::run(&paths, &cache, command, &fmt)
+        }
         Some(Commands::Project { command }) => match command {
-            ProjectCommand::Apply(opts) => apply::run(&paths, &cache, &fmt, &opts),
-            ProjectCommand::Edit => edit::run(&paths, &cache, &fmt),
+            ProjectCommand::Apply(opts) => {
+                let cache = DetectCache::new(&paths);
+                apply::run(&paths, &cache, &fmt, &opts)
+            }
+            ProjectCommand::Edit => {
+                let cache = DetectCache::new(&paths);
+                edit::run(&paths, &cache, &fmt)
+            }
         },
         // Handled in fast path above.
         None | Some(Commands::Version) | Some(Commands::Completion { .. }) => unreachable!(),

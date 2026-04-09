@@ -16,7 +16,7 @@ use log::{info, warn};
 use once_cell::sync::Lazy;
 use toml::Table;
 
-use crate::detect::{CODING_AGENTS, ProviderKind, coding_agent_spec};
+use crate::agent::{ProviderKind, agent_spec, agent_specs};
 use crate::error::{ArcError, Result};
 use crate::io::{read_toml_table, write_toml_pretty};
 use crate::paths::ArcPaths;
@@ -45,6 +45,7 @@ pub struct ClaudeProviderConfig {
 pub struct CodexProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+    pub auth_json: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -64,7 +65,7 @@ static CODEX_PROVIDER_BACKEND: Lazy<ProviderBackend> = Lazy::new(|| ProviderBack
 });
 
 pub fn supported_provider_agents() -> Vec<&'static str> {
-    CODING_AGENTS
+    agent_specs()
         .iter()
         .filter(|spec| spec.provider_kind.is_some())
         .map(|spec| spec.id)
@@ -175,7 +176,7 @@ pub fn apply_provider(paths: &ArcPaths, provider: &ProviderInfo) -> Result<()> {
 }
 
 fn provider_backend(agent: &str) -> Option<&'static ProviderBackend> {
-    let kind = coding_agent_spec(agent)?.provider_kind?;
+    let kind = agent_spec(agent)?.provider_kind?;
     match kind {
         ProviderKind::Claude => Some(&CLAUDE_PROVIDER_BACKEND),
         ProviderKind::Codex => Some(&CODEX_PROVIDER_BACKEND),
@@ -186,7 +187,7 @@ fn provider_backend(agent: &str) -> Option<&'static ProviderBackend> {
 /// Only writes when the provider config file does not exist yet.
 pub fn seed_default_providers(paths: &ArcPaths, cache: &crate::detect::DetectCache) {
     let providers_dir = paths.providers_dir();
-    for spec in CODING_AGENTS
+    for spec in agent_specs()
         .iter()
         .filter(|spec| spec.provider_kind.is_some())
     {

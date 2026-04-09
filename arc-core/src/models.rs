@@ -2,11 +2,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     Skill,
+    Mcp,
     ProviderProfile,
+    #[serde(rename = "subagent", alias = "sub_agent")]
     SubAgent,
 }
 
@@ -14,15 +16,16 @@ impl ResourceKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Skill => "skill",
+            Self::Mcp => "mcp",
             Self::ProviderProfile => "provider_profile",
-            Self::SubAgent => "sub_agent",
+            Self::SubAgent => "subagent",
         }
     }
 
     /// Default directory name under an agent home for this kind (`as_str()`).
     ///
     /// Skills may use a per-agent subdirectory (e.g. `skills-cursor`); resolve install paths with
-    /// [`crate::detect::resource_install_subdir`] instead of this alone.
+    /// [`crate::agent::resource_install_subdir`] instead of this alone.
     pub fn default_install_dir_name(&self) -> &'static str {
         self.as_str()
     }
@@ -40,8 +43,9 @@ impl std::str::FromStr for ResourceKind {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "skill" => Ok(Self::Skill),
+            "mcp" => Ok(Self::Mcp),
             "provider_profile" => Ok(Self::ProviderProfile),
-            "sub_agent" => Ok(Self::SubAgent),
+            "subagent" | "sub_agent" => Ok(Self::SubAgent),
             _ => Err(format!("unsupported resource kind: {s}")),
         }
     }

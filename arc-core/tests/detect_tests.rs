@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 
+use arc_core::agent::{
+    ProviderKind, SkillInstallStrategy, agent_spec, default_install_targets,
+    ordered_agent_ids_for_resource_kind, project_skill_path, resource_install_subdir,
+};
 use arc_core::detect::{
-    AgentInfo, DetectCache, ProviderKind, SkillInstallStrategy, coding_agent_spec,
-    default_install_targets, detect_agent, detect_agents_for_install,
-    ordered_agent_ids_for_resource_kind, project_skill_path, project_skills_satisfied_all,
-    project_skills_satisfied_any, resource_install_subdir,
+    AgentInfo, DetectCache, detect_agent, detect_agents_for_install, project_skills_satisfied_all,
+    project_skills_satisfied_any,
 };
 use arc_core::models::ResourceKind;
 use arc_core::paths::ArcPaths;
@@ -51,7 +53,7 @@ fn detect_agents_for_install_returns_subset_of_supported() {
 
 #[test]
 fn openclaw_has_no_project_skill_layout() {
-    let owl = coding_agent_spec("openclaw").unwrap();
+    let owl = agent_spec("openclaw").unwrap();
     assert!(!owl.supports_project_skills);
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo");
@@ -61,7 +63,7 @@ fn openclaw_has_no_project_skill_layout() {
 
 #[test]
 fn coding_agent_spec_exposes_skill_subdir() {
-    let cursor = coding_agent_spec("cursor").unwrap();
+    let cursor = agent_spec("cursor").unwrap();
     assert_eq!(cursor.skills_subdir, "skills-cursor");
 }
 
@@ -89,18 +91,18 @@ fn resource_install_subdir_falls_back_to_kind_str_for_unknown_agent() {
 fn resource_install_subdir_non_skill_uses_as_str() {
     assert_eq!(
         resource_install_subdir(&ResourceKind::SubAgent, "claude"),
-        "sub_agent"
+        "subagent"
     );
 }
 
 #[test]
 fn coding_agent_spec_carries_install_strategy_and_provider_metadata() {
-    let codex = coding_agent_spec("codex").unwrap();
+    let codex = agent_spec("codex").unwrap();
     assert_eq!(codex.skill_install_strategy, SkillInstallStrategy::Symlink);
     assert_eq!(codex.provider_kind, Some(ProviderKind::Codex));
     assert!(codex.provider_seed.is_some());
 
-    let openclaw = coding_agent_spec("openclaw").unwrap();
+    let openclaw = agent_spec("openclaw").unwrap();
     assert_eq!(openclaw.skill_install_strategy, SkillInstallStrategy::Copy);
     assert_eq!(openclaw.provider_kind, None);
     assert!(openclaw.provider_seed.is_none());
@@ -142,7 +144,7 @@ fn project_skills_any_vs_all_when_only_one_agent_has_skill() {
 
 #[test]
 fn kimi_uses_home_and_project_skill_layout() {
-    let kimi = coding_agent_spec("kimi").unwrap();
+    let kimi = agent_spec("kimi").unwrap();
     assert_eq!(kimi.skills_subdir, "skills");
     assert_eq!(kimi.executable, "kimi");
     assert_eq!(kimi.version_flag, "--version");

@@ -8,7 +8,8 @@ use std::path::Path;
 
 use log::info;
 
-use crate::detect::{CODING_AGENTS, DetectCache, SkillInstallStrategy, coding_agent_spec};
+use crate::agent::{SkillInstallStrategy, agent_spec, agent_specs};
+use crate::detect::DetectCache;
 use crate::engine::InstallEngine;
 use crate::error::Result;
 use crate::models::ResourceKind;
@@ -65,7 +66,7 @@ pub fn run_global_skill_maintenance(
 
 impl SkillRegistry {
     fn bootstrap_legacy_global_skill_tracking(&self) -> Result<()> {
-        for spec in CODING_AGENTS.iter() {
+        for spec in agent_specs() {
             if !spec.supports_skills {
                 continue;
             }
@@ -199,7 +200,7 @@ impl SkillRegistry {
                     continue;
                 }
             };
-            let Some(spec) = coding_agent_spec(&install.agent) else {
+            let Some(spec) = agent_spec(&install.agent) else {
                 continue;
             };
 

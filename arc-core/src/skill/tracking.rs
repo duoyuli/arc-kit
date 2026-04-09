@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use log::warn;
 use serde::{Deserialize, Serialize};
 
-use crate::detect::{DetectCache, SkillInstallStrategy, coding_agent_spec};
+use crate::agent::{SkillInstallStrategy, agent_spec};
+use crate::detect::DetectCache;
 use crate::error::{ArcError, Result};
 
 const TRACKING_PREFIX: &str = ".arc-skill-install.";
@@ -72,7 +73,7 @@ pub fn list_tracked_global_skill_installs(cache: &DetectCache) -> Vec<TrackedGlo
         let Some(root) = &info.root else {
             continue;
         };
-        let Some(spec) = coding_agent_spec(agent_id) else {
+        let Some(spec) = agent_spec(agent_id) else {
             continue;
         };
         if !spec.supports_skills {

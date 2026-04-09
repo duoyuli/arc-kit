@@ -2,23 +2,26 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use arc_core::models::{ResourceKind, SkillEntry, SkillOrigin};
+use serde_json::json;
 
 #[test]
 fn resource_kind_roundtrip_string_values() {
     assert_eq!(ResourceKind::Skill.as_str(), "skill");
     assert_eq!(ResourceKind::ProviderProfile.as_str(), "provider_profile");
-    assert_eq!(ResourceKind::SubAgent.as_str(), "sub_agent");
+    assert_eq!(ResourceKind::Mcp.as_str(), "mcp");
+    assert_eq!(ResourceKind::SubAgent.as_str(), "subagent");
 
     assert_eq!(
         ResourceKind::from_str("skill").unwrap(),
         ResourceKind::Skill
     );
+    assert_eq!(ResourceKind::from_str("mcp").unwrap(), ResourceKind::Mcp);
     assert_eq!(
         ResourceKind::from_str("provider_profile").unwrap(),
         ResourceKind::ProviderProfile
     );
     assert_eq!(
-        ResourceKind::from_str("sub_agent").unwrap(),
+        ResourceKind::from_str("subagent").unwrap(),
         ResourceKind::SubAgent
     );
 }
@@ -27,6 +30,18 @@ fn resource_kind_roundtrip_string_values() {
 fn resource_kind_rejects_unknown_value() {
     let err = ResourceKind::from_str("unknown").unwrap_err();
     assert!(err.contains("unsupported resource kind"));
+}
+
+#[test]
+fn resource_kind_serializes_subagent_without_legacy_underscore() {
+    assert_eq!(
+        serde_json::to_value(ResourceKind::SubAgent).unwrap(),
+        json!("subagent")
+    );
+    assert_eq!(
+        serde_json::from_value::<ResourceKind>(json!("sub_agent")).unwrap(),
+        ResourceKind::SubAgent
+    );
 }
 
 #[test]

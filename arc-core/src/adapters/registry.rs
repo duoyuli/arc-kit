@@ -1,12 +1,12 @@
 use std::fs;
 
 use crate::adapters::base::{AgentContext, ApplyResult, Change, ResourceAdapter, Snapshot};
-use crate::detect::{CODING_AGENTS, SkillInstallStrategy};
+use crate::agent::{SkillInstallStrategy, agent_specs};
 use crate::models::ResourceKind;
 
 pub fn all_resource_adapters() -> Vec<Box<dyn ResourceAdapter>> {
     let mut out: Vec<Box<dyn ResourceAdapter>> = Vec::new();
-    for agent in CODING_AGENTS.iter() {
+    for agent in agent_specs() {
         if !agent.supports_skills {
             continue;
         }

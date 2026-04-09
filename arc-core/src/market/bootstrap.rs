@@ -115,8 +115,6 @@ fn sync_market_sources(paths: &ArcPaths, refresh_index: bool) -> Result<MarketSy
         CatalogManager::new(paths.clone())
             .rebuild(&[])
             .map_err(|err| ArcError::new(format!("failed to rebuild catalog: {err}")))?;
-        let cache = DetectCache::new(paths);
-        report.global_skills = Some(crate::skill::run_global_skill_maintenance(paths, &cache)?);
         return Ok(report);
     }
 
@@ -190,7 +188,9 @@ fn sync_market_sources(paths: &ArcPaths, refresh_index: bool) -> Result<MarketSy
     CatalogManager::new(paths.clone())
         .rebuild(&all_resources)
         .map_err(|err| ArcError::new(format!("failed to rebuild catalog: {err}")))?;
-    let cache = DetectCache::new(paths);
-    report.global_skills = Some(crate::skill::run_global_skill_maintenance(paths, &cache)?);
+    if refresh_index {
+        let cache = DetectCache::new(paths);
+        report.global_skills = Some(crate::skill::run_global_skill_maintenance(paths, &cache)?);
+    }
     Ok(report)
 }

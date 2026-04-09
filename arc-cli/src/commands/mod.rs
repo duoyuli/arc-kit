@@ -2,6 +2,8 @@ pub mod apply;
 pub mod arc_toml_wizard;
 pub mod edit;
 pub mod market;
+pub mod mcp;
 pub mod provider;
 pub mod skill;
 pub mod status;
+pub mod subagent;

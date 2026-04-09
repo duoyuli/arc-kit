@@ -1,6 +1,7 @@
+use arc_core::capability::{CapabilityStatusEntry, CapabilityTargetState, SourceScope};
 use std::env;
 
-use arc_core::detect::CODING_AGENTS;
+use arc_core::agent::agent_specs;
 use arc_core::error::ArcError;
 use arc_core::status::{ProjectState, ProviderMatchState, StatusSnapshot};
 use arc_core::{ArcPaths, DetectCache, collect_status};
@@ -19,6 +20,8 @@ pub fn run(paths: &ArcPaths, cache: &DetectCache, fmt: &OutputFormat) -> Result<
             project: snapshot.project,
             agents: snapshot.agents,
             catalog: snapshot.catalog,
+            mcps: snapshot.mcps,
+            subagents: snapshot.subagents,
             actions: snapshot.actions,
         })?;
         return Ok(());
@@ -34,6 +37,12 @@ fn render_text(snapshot: &StatusSnapshot) {
     render_agents(snapshot);
     println!();
     render_catalog(snapshot);
+    println!();
+    render_capabilities("MCPs", &snapshot.mcps);
+    println!();
+    render_capabilities("Subagents", &snapshot.subagents);
+    println!();
+    render_actions(&snapshot.actions);
     println!();
 }
 
@@ -128,7 +137,7 @@ fn render_agents(snapshot: &StatusSnapshot) {
 
     if snapshot.agents.is_empty() {
         println!("  none detected");
-        let names: Vec<&str> = CODING_AGENTS
+        let names: Vec<&str> = agent_specs()
             .iter()
             .map(|agent| agent.display_name)
             .collect();
@@ -173,13 +182,23 @@ fn render_agents(snapshot: &StatusSnapshot) {
         } else {
             "global-only"
         };
+        let mcp_scope = &agent.mcp_scope_supported;
+        let subagent = &agent.subagent_supported;
+        let transports = if agent.mcp_transports_supported.is_empty() {
+            "-".to_string()
+        } else {
+            agent.mcp_transports_supported.join(",")
+        };
         println!(
-            "  {}  {}  {}  {} global skills  {}",
+            "  {}  {}  {}  {} global skills  {}  mcp:{} [{}]  subagent:{}",
             pad_str(&agent.name, name_width, Alignment::Left, None),
             style(pad_str(version, version_width, Alignment::Left, None)).dim(),
             style(pad_str(provider, provider_width, Alignment::Left, None)).cyan(),
             agent.global_skill_count,
             style(project_local).dim(),
+            mcp_scope,
+            transports,
+            subagent,
         );
     }
 }
@@ -206,6 +225,70 @@ fn render_provider_status(status: &arc_core::status::ProjectProviderAgentStatus)
         ProviderMatchState::Mismatch => style("provider mismatch").yellow().to_string(),
         ProviderMatchState::MissingProfile => {
             style("provider profile missing").yellow().to_string()
+        }
+    }
+}
+
+fn render_capabilities(title: &str, items: &[CapabilityStatusEntry]) {
+    println!("{}", style(title).bold());
+    if items.is_empty() {
+        println!("  none");
+        return;
+    }
+
+    for item in items {
+        let scope = match item.source_scope {
+            SourceScope::Global => "global",
+            SourceScope::Project => "project",
+        };
+        let resolution = match item.resolution {
+            arc_core::capability::ResourceResolution::Active => "active",
+            arc_core::capability::ResourceResolution::Shadowed => "shadowed",
+        };
+        println!(
+            "  {}  {}  {}",
+            style(&item.name).bold(),
+            style(scope).cyan(),
+            style(resolution).dim()
+        );
+        if item.targets.is_empty() {
+            println!("      {}", style("no current targets").dim());
+            continue;
+        }
+        for target in &item.targets {
+            let marker = match target.status {
+                CapabilityTargetState::Applied => style("+").green(),
+                CapabilityTargetState::Skipped => style("!").yellow(),
+                CapabilityTargetState::Failed => style("x").red(),
+            };
+            let detail = target.reason.as_deref().unwrap_or("ok");
+            println!(
+                "      {} {}  desired:{}  applied:{}  {}",
+                marker,
+                target.agent,
+                format!("{:?}", target.desired_scope).to_ascii_lowercase(),
+                format!("{:?}", target.applied_scope).to_ascii_lowercase(),
+                style(detail).dim()
+            );
+        }
+    }
+}
+
+fn render_actions(actions: &[arc_core::status::RecommendedAction]) {
+    println!("{}", style("Actions").bold());
+    if actions.is_empty() {
+        println!("  none");
+        return;
+    }
+    for action in actions {
+        let marker = match action.severity {
+            arc_core::status::ActionSeverity::Info => style("i").cyan(),
+            arc_core::status::ActionSeverity::Warn => style("!").yellow(),
+        };
+        if let Some(command) = &action.command {
+            println!("  {} {} ({})", marker, action.message, style(command).dim());
+        } else {
+            println!("  {} {}", marker, action.message);
         }
     }
 }

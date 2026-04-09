@@ -147,9 +147,13 @@ fn update(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
         if let Some(gs) = &report.global_skills {
             for f in &gs.sync.failures {
                 items.push(WriteResultItem {
+                    resource_kind: None,
                     name: f.skill.clone(),
                     agent: f.agent.clone().unwrap_or_default(),
                     status: format!("failed: {}", f.message),
+                    desired_scope: None,
+                    applied_scope: None,
+                    reason: None,
                 });
             }
         }

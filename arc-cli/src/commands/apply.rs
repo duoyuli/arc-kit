@@ -1,13 +1,20 @@
 use std::env;
 use std::io::{self, IsTerminal};
+use std::path::Path;
 
+use arc_core::capability::{
+    CapabilityTargetState, McpApplyPlan, SourceScope, SubagentApplyPlan, apply_mcp_plan,
+    apply_subagent_plan, list_tracked_capability_installs, remove_tracked_capability,
+    tracking_record_for_target, validate_mcp_definition, validate_subagent_definition,
+};
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::market::bootstrap::sync_market_source_resources;
 use arc_core::market::sources::MarketSourceRegistry;
 use arc_core::models::ResourceKind;
 use arc_core::project::{
-    EffectiveConfig, find_project_config, load_project_config, resolve_effective_config,
+    EffectiveConfig, ProjectConfig, find_project_config, load_project_config,
+    resolve_effective_config,
 };
 use arc_core::provider::{apply_provider, load_providers_for_agent, supported_provider_agents};
 use arc_core::skill::SkillRegistry;
@@ -28,6 +35,7 @@ pub fn run(
 ) -> Result<(), ArcError> {
     let cwd = env::current_dir()
         .map_err(|e| ArcError::new(format!("failed to get working directory: {e}")))?;
+    arc_core::seed_default_providers(paths, cache);
 
     if find_project_config(&cwd).is_none() {
         if *fmt == OutputFormat::Json {
@@ -115,26 +123,21 @@ pub fn run(
         .map_err(|e| e.with_exit_code(1))?;
 
     if *fmt == OutputFormat::Json {
-        return apply_json(paths, cache, &registry, &effective, provider_switch, args);
+        return apply_json(
+            paths,
+            cache,
+            &registry,
+            &effective,
+            project_cfg.as_ref(),
+            provider_switch,
+            args,
+        );
     }
 
     println!();
     println!("  {}", style(&effective.project_name).bold());
 
     print_required_skills_status(&effective);
-
-    if effective.is_up_to_date()
-        && effective.missing_unavailable.is_empty()
-        && provider_switch.is_none()
-    {
-        println!();
-        println!(
-            "  {} already up to date.",
-            style(&effective.project_name).bold()
-        );
-        println!();
-        return Ok(());
-    }
 
     println!();
 
@@ -223,21 +226,18 @@ pub fn run(
         );
     }
 
+    let capability_issues = if let Some(cfg) = &project_cfg {
+        apply_project_capabilities_text(paths, cache, cfg, project_root, args)?
+    } else {
+        false
+    };
+
     println!();
 
-    if effective.missing_unavailable.is_empty() {
+    if effective.missing_unavailable.is_empty() && !capability_issues {
         println!("  {}", style("Ready.").green());
     } else {
-        println!(
-            "  {} ({} skill{} skipped)",
-            style("Partially ready").yellow(),
-            effective.missing_unavailable.len(),
-            if effective.missing_unavailable.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        );
+        println!("  {}", style("Partially ready").yellow(),);
     }
     println!();
 
@@ -340,6 +340,7 @@ fn apply_json(
     cache: &DetectCache,
     registry: &SkillRegistry,
     effective: &EffectiveConfig,
+    project_cfg: Option<&ProjectConfig>,
     provider_switch: Option<&str>,
     args: &ProjectApplyArgs,
 ) -> Result<(), ArcError> {
@@ -348,9 +349,13 @@ fn apply_json(
     if let Some(provider_name) = provider_switch {
         apply_provider_switch(paths, provider_name, false)?;
         items.push(WriteResultItem {
+            resource_kind: None,
             name: provider_name.to_string(),
             agent: "all".to_string(),
             status: "provider_switched".to_string(),
+            desired_scope: None,
+            applied_scope: None,
+            reason: None,
         });
     }
 
@@ -366,9 +371,13 @@ fn apply_json(
     for name in &effective.missing_installable {
         let Some(skill) = registry.find(name) else {
             items.push(WriteResultItem {
+                resource_kind: None,
                 name: name.clone(),
                 agent: "".to_string(),
                 status: "not_found".to_string(),
+                desired_scope: None,
+                applied_scope: None,
+                reason: None,
             });
             continue;
         };
@@ -376,9 +385,13 @@ fn apply_json(
             Ok(p) => p,
             Err(e) => {
                 items.push(WriteResultItem {
+                    resource_kind: None,
                     name: name.clone(),
                     agent: "".to_string(),
                     status: format!("error: {}", e.message),
+                    desired_scope: None,
+                    applied_scope: None,
+                    reason: None,
                 });
                 continue;
             }
@@ -393,24 +406,35 @@ fn apply_json(
             Ok(installed) => {
                 for agent in &installed {
                     items.push(WriteResultItem {
+                        resource_kind: None,
                         name: name.clone(),
                         agent: agent.clone(),
                         status: "installed".to_string(),
+                        desired_scope: None,
+                        applied_scope: None,
+                        reason: None,
                     });
                 }
             }
             Err(e) => {
                 items.push(WriteResultItem {
+                    resource_kind: None,
                     name: name.clone(),
                     agent: "".to_string(),
                     status: format!("error: {}", e.message),
+                    desired_scope: None,
+                    applied_scope: None,
+                    reason: None,
                 });
             }
         }
     }
 
-    let ok = effective.missing_unavailable.is_empty()
-        && !items.iter().any(|i| i.status.starts_with("error"));
+    if let Some(cfg) = project_cfg {
+        apply_project_capabilities_json(paths, cache, cfg, project_root, args, &mut items)?;
+    }
+
+    let ok = effective.missing_unavailable.is_empty() && !items.iter().any(item_has_issue);
 
     print_json(&WriteResult {
         schema_version: SCHEMA_VERSION,
@@ -447,4 +471,279 @@ fn apply_provider_switch(
         }
     }
     Ok(())
+}
+
+fn apply_project_capabilities_text(
+    paths: &ArcPaths,
+    cache: &DetectCache,
+    cfg: &ProjectConfig,
+    project_root: &Path,
+    args: &ProjectApplyArgs,
+) -> Result<bool, ArcError> {
+    let mut had_issues = false;
+    for definition in &cfg.mcps {
+        let mut definition = definition.clone();
+        validate_mcp_definition(&mut definition, SourceScope::Project)?;
+        let statuses = apply_mcp_plan(
+            paths,
+            cache,
+            &McpApplyPlan {
+                definition: definition.clone(),
+                source_scope: SourceScope::Project,
+            },
+            Some(project_root),
+            args.allow_global_fallback,
+        )?;
+        for item in statuses {
+            had_issues |= item.status != CapabilityTargetState::Applied;
+            render_capability_target("mcp", &definition.name, &item);
+        }
+    }
+
+    for definition in &cfg.subagents {
+        let mut definition = definition.clone();
+        let prompt_path =
+            validate_subagent_definition(&mut definition, SourceScope::Project, project_root)?;
+        let statuses = apply_subagent_plan(
+            paths,
+            cache,
+            &SubagentApplyPlan {
+                definition: definition.clone(),
+                prompt_path,
+                source_scope: SourceScope::Project,
+            },
+            Some(project_root),
+        )?;
+        for item in statuses {
+            had_issues |= item.status != CapabilityTargetState::Applied;
+            render_capability_target("subagent", &definition.name, &item);
+        }
+    }
+
+    cleanup_removed_project_capabilities(
+        paths,
+        cache,
+        cfg,
+        project_root,
+        args.allow_global_fallback,
+        true,
+        None,
+    )?;
+    Ok(had_issues)
+}
+
+fn apply_project_capabilities_json(
+    paths: &ArcPaths,
+    cache: &DetectCache,
+    cfg: &ProjectConfig,
+    project_root: &Path,
+    args: &ProjectApplyArgs,
+    items: &mut Vec<WriteResultItem>,
+) -> Result<(), ArcError> {
+    for definition in &cfg.mcps {
+        let mut definition = definition.clone();
+        validate_mcp_definition(&mut definition, SourceScope::Project)?;
+        let statuses = apply_mcp_plan(
+            paths,
+            cache,
+            &McpApplyPlan {
+                definition: definition.clone(),
+                source_scope: SourceScope::Project,
+            },
+            Some(project_root),
+            args.allow_global_fallback,
+        )?;
+        items.extend(statuses.into_iter().map(|item| WriteResultItem {
+            resource_kind: Some("mcp".to_string()),
+            name: definition.name.clone(),
+            agent: item.agent,
+            status: format!("{:?}", item.status).to_ascii_lowercase(),
+            desired_scope: Some(item.desired_scope),
+            applied_scope: Some(item.applied_scope),
+            reason: item.reason,
+        }));
+    }
+
+    for definition in &cfg.subagents {
+        let mut definition = definition.clone();
+        let prompt_path =
+            validate_subagent_definition(&mut definition, SourceScope::Project, project_root)?;
+        let statuses = apply_subagent_plan(
+            paths,
+            cache,
+            &SubagentApplyPlan {
+                definition: definition.clone(),
+                prompt_path,
+                source_scope: SourceScope::Project,
+            },
+            Some(project_root),
+        )?;
+        items.extend(statuses.into_iter().map(|item| WriteResultItem {
+            resource_kind: Some("subagent".to_string()),
+            name: definition.name.clone(),
+            agent: item.agent,
+            status: format!("{:?}", item.status).to_ascii_lowercase(),
+            desired_scope: Some(item.desired_scope),
+            applied_scope: Some(item.applied_scope),
+            reason: item.reason,
+        }));
+    }
+
+    cleanup_removed_project_capabilities(
+        paths,
+        cache,
+        cfg,
+        project_root,
+        args.allow_global_fallback,
+        false,
+        Some(items),
+    )
+}
+
+fn cleanup_removed_project_capabilities(
+    paths: &ArcPaths,
+    cache: &DetectCache,
+    cfg: &ProjectConfig,
+    project_root: &Path,
+    allow_global_fallback: bool,
+    print: bool,
+    items: Option<&mut Vec<WriteResultItem>>,
+) -> Result<(), ArcError> {
+    let desired_records =
+        desired_project_capability_records(paths, cache, cfg, project_root, allow_global_fallback)?;
+    let tracked = list_tracked_capability_installs(paths);
+    let mut removed_items = Vec::new();
+    for record in tracked.into_iter().filter(|record| {
+        record.source_scope == SourceScope::Project
+            && record.project_root.as_deref() == Some(project_root)
+            && matches!(record.kind, ResourceKind::Mcp | ResourceKind::SubAgent)
+            && !desired_records.iter().any(|desired| desired == record)
+    }) {
+        remove_tracked_capability(paths, &record, Some(project_root))?;
+        removed_items.push(record);
+    }
+
+    if print {
+        for record in &removed_items {
+            println!(
+                "  {} {} -> {} (removed)",
+                style("-").green(),
+                style(&record.name).bold(),
+                agent_display_name(&record.agent)
+            );
+        }
+    }
+    if let Some(items) = items {
+        items.extend(removed_items.into_iter().map(|record| WriteResultItem {
+            resource_kind: Some(match record.kind {
+                ResourceKind::Mcp => "mcp".to_string(),
+                ResourceKind::SubAgent => "subagent".to_string(),
+                _ => "resource".to_string(),
+            }),
+            name: record.name,
+            agent: record.agent,
+            status: "removed".to_string(),
+            desired_scope: None,
+            applied_scope: Some(match record.applied_scope {
+                arc_core::agent::AppliedResourceScope::Project => {
+                    arc_core::capability::AppliedScope::Project
+                }
+                arc_core::agent::AppliedResourceScope::Global
+                | arc_core::agent::AppliedResourceScope::GlobalFallback => {
+                    arc_core::capability::AppliedScope::Global
+                }
+            }),
+            reason: None,
+        }));
+    }
+    Ok(())
+}
+
+fn desired_project_capability_records(
+    paths: &ArcPaths,
+    cache: &DetectCache,
+    cfg: &ProjectConfig,
+    project_root: &Path,
+    allow_global_fallback: bool,
+) -> Result<Vec<arc_core::capability::TrackedCapabilityInstall>, ArcError> {
+    let tracked = list_tracked_capability_installs(paths);
+    let mut desired = Vec::new();
+
+    for definition in &cfg.mcps {
+        let mut definition = definition.clone();
+        validate_mcp_definition(&mut definition, SourceScope::Project)?;
+        let statuses = arc_core::capability::preview_mcp_plan(
+            paths,
+            cache,
+            &tracked,
+            &McpApplyPlan {
+                definition: definition.clone(),
+                source_scope: SourceScope::Project,
+            },
+            Some(project_root),
+            allow_global_fallback,
+        )?;
+        desired.extend(statuses.into_iter().filter_map(|status| {
+            tracking_record_for_target(
+                ResourceKind::Mcp,
+                &definition.name,
+                SourceScope::Project,
+                &status,
+                Some(project_root),
+            )
+        }));
+    }
+
+    for definition in &cfg.subagents {
+        let mut definition = definition.clone();
+        let prompt_path =
+            validate_subagent_definition(&mut definition, SourceScope::Project, project_root)?;
+        let statuses = arc_core::capability::preview_subagent_plan(
+            paths,
+            cache,
+            &SubagentApplyPlan {
+                definition: definition.clone(),
+                prompt_path,
+                source_scope: SourceScope::Project,
+            },
+            Some(project_root),
+        )?;
+        desired.extend(statuses.into_iter().filter_map(|status| {
+            tracking_record_for_target(
+                ResourceKind::SubAgent,
+                &definition.name,
+                SourceScope::Project,
+                &status,
+                Some(project_root),
+            )
+        }));
+    }
+
+    Ok(desired)
+}
+
+fn render_capability_target(
+    kind: &str,
+    name: &str,
+    item: &arc_core::capability::CapabilityTargetStatus,
+) {
+    let marker = match item.status {
+        CapabilityTargetState::Applied => style("+").green(),
+        CapabilityTargetState::Skipped => style("!").yellow(),
+        CapabilityTargetState::Failed => style("x").red(),
+    };
+    let detail = item.reason.as_deref().unwrap_or("ok");
+    println!(
+        "  {} {} {} -> {} ({})",
+        marker,
+        style(kind).cyan(),
+        style(name).bold(),
+        agent_display_name(&item.agent),
+        style(detail).dim()
+    );
+}
+
+fn item_has_issue(item: &WriteResultItem) -> bool {
+    matches!(item.status.as_str(), "failed" | "skipped" | "not_found")
+        || item.status.starts_with("error")
 }

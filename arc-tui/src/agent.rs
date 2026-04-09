@@ -1,11 +1,11 @@
-use arc_core::detect::coding_agent_spec;
+use arc_core::agent::agent_spec;
 use dialoguer::Select;
 
 use crate::interact_required_multi_select;
 use crate::theme::theme;
 
 pub(crate) fn agent_display_name(id: &str) -> String {
-    coding_agent_spec(id)
+    agent_spec(id)
         .map(|spec| spec.display_name.to_string())
         .unwrap_or_else(|| id.to_string())
 }

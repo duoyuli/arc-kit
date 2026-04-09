@@ -16,8 +16,8 @@ use crate::cli::{
 };
 use crate::display::{agent_display_name, agent_display_names};
 use crate::format::{
-    SCHEMA_VERSION, SkillInfoOutput, SkillItem, SkillListOutput, WriteResult, WriteResultItem,
-    print_json,
+    ErrorOutput, SCHEMA_VERSION, SkillInfoOutput, SkillItem, SkillListOutput, WriteResult,
+    WriteResultItem, print_json,
 };
 
 pub fn run(
@@ -43,10 +43,9 @@ fn list(
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
     let registry = SkillRegistry::new(paths.clone(), cache.clone());
+    let report = registry.bootstrap_catalog()?;
     if *fmt != OutputFormat::Json {
-        print_bootstrap_report(&registry.bootstrap_catalog()?);
-    } else {
-        let _ = registry.bootstrap_catalog();
+        print_bootstrap_report(&report);
     }
     let mut skills = registry.list_all();
 
@@ -105,10 +104,9 @@ fn install(
         .ensure_arc_home()
         .map_err(|err| ArcError::new(err.to_string()))?;
     let registry = SkillRegistry::new(paths.clone(), cache.clone());
+    let report = registry.bootstrap_catalog()?;
     if *fmt != OutputFormat::Json {
-        print_bootstrap_report(&registry.bootstrap_catalog()?);
-    } else {
-        let _ = registry.bootstrap_catalog();
+        print_bootstrap_report(&report);
     }
     let engine = InstallEngine::new(cache.clone());
     let mut skills = registry.list_all();
@@ -130,7 +128,7 @@ fn install(
 
     if args.name.is_none() {
         let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-        if !is_tty {
+        if *fmt == OutputFormat::Json || !is_tty {
             return Err(ArcError::with_hint(
                 "Skill name required in non-interactive mode.".to_string(),
                 "Usage: arc skill install <name> [--agent <agent>]".to_string(),
@@ -153,6 +151,13 @@ fn install(
 
     let name = args.name.expect("checked optional name");
     let Some(skill) = skills.into_iter().find(|s| s.name == name) else {
+        if *fmt == OutputFormat::Json {
+            return print_json(&ErrorOutput {
+                schema_version: SCHEMA_VERSION,
+                ok: false,
+                error: format!("skill '{name}' not found."),
+            });
+        }
         return Err(ArcError::new(format!("skill '{name}' not found.")));
     };
     let targets = if args.agent.is_empty() {
@@ -235,9 +240,13 @@ fn install_one_json(
     for t in targets {
         if engine.is_installed_for(&skill.name, &ResourceKind::Skill, t) {
             items.push(WriteResultItem {
+                resource_kind: None,
                 name: skill.name.clone(),
                 agent: t.clone(),
                 status: "already_installed".to_string(),
+                desired_scope: None,
+                applied_scope: None,
+                reason: None,
             });
         }
     }
@@ -263,17 +272,25 @@ fn install_one_json(
                 for agent in &installed {
                     record_global_skill_install(cache, agent, &skill.name, &source_path)?;
                     items.push(WriteResultItem {
+                        resource_kind: None,
                         name: skill.name.clone(),
                         agent: agent.clone(),
                         status: "installed".to_string(),
+                        desired_scope: None,
+                        applied_scope: None,
+                        reason: None,
                     });
                 }
             }
             Err(e) => {
                 items.push(WriteResultItem {
+                    resource_kind: None,
                     name: skill.name.clone(),
                     agent: "".to_string(),
                     status: format!("error: {}", e.message),
+                    desired_scope: None,
+                    applied_scope: None,
+                    reason: None,
                 });
             }
         }
@@ -305,7 +322,7 @@ fn uninstall(
 
     let Some(name) = args.name else {
         let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-        if !is_tty {
+        if *fmt == OutputFormat::Json || !is_tty {
             return Err(ArcError::with_hint(
                 "Skill name required in non-interactive mode.".to_string(),
                 "Usage: arc skill uninstall <name> [--agent <agent>] [--all]".to_string(),
@@ -381,7 +398,7 @@ fn record_global_skill_install(
     let Some(root) = &agent_info.root else {
         return Ok(());
     };
-    let Some(spec) = arc_core::detect::coding_agent_spec(agent) else {
+    let Some(spec) = arc_core::agent::agent_spec(agent) else {
         return Ok(());
     };
     let skills_dir = root.join(spec.skills_subdir);
@@ -405,7 +422,7 @@ fn clear_global_skill_tracking(
         let Some(root) = &agent_info.root else {
             continue;
         };
-        let Some(spec) = arc_core::detect::coding_agent_spec(&agent) else {
+        let Some(spec) = arc_core::agent::agent_spec(&agent) else {
             continue;
         };
         untrack_global_skill_install(&root.join(spec.skills_subdir), skill)
@@ -424,13 +441,19 @@ fn info(
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
     let registry = SkillRegistry::new(paths.clone(), cache.clone());
+    let report = registry.bootstrap_catalog()?;
     if *fmt != OutputFormat::Json {
-        print_bootstrap_report(&registry.bootstrap_catalog()?);
-    } else {
-        let _ = registry.bootstrap_catalog();
+        print_bootstrap_report(&report);
     }
 
     let Some(skill) = registry.find(&args.name) else {
+        if *fmt == OutputFormat::Json {
+            return print_json(&ErrorOutput {
+                schema_version: SCHEMA_VERSION,
+                ok: false,
+                error: format!("skill '{}' not found.", args.name),
+            });
+        }
         return Err(ArcError::new(format!("skill '{}' not found.", args.name)));
     };
 

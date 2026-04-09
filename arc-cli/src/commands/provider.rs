@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{self, IsTerminal};
 
 use arc_core::ArcPaths;
+use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::provider::test::test_provider;
 use arc_core::provider::{
@@ -21,9 +22,11 @@ use crate::format::{
 
 pub fn run(
     paths: &ArcPaths,
+    cache: &DetectCache,
     command: Option<ProviderCommand>,
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
+    arc_core::seed_default_providers(paths, cache);
     match command {
         Some(ProviderCommand::List) | None => list(paths, fmt),
         Some(ProviderCommand::Use { name, agent }) => {
@@ -119,7 +122,7 @@ fn use_provider(
         },
         None => {
             let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-            if !is_tty {
+            if *fmt == OutputFormat::Json || !is_tty {
                 return Err(ArcError::with_hint(
                     "Provider name required in non-interactive mode.".to_string(),
                     "Usage: arc provider use <name> [--agent <agent>]".to_string(),

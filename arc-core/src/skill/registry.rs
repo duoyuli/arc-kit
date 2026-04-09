@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
-use crate::detect::{DetectCache, coding_agent_spec};
+use crate::agent::agent_spec;
+use crate::detect::DetectCache;
 use crate::error::Result;
 use crate::market::bootstrap::{MarketSyncReport, ensure_local_catalog};
 use crate::market::catalog::CatalogManager;
@@ -161,7 +162,7 @@ impl SkillRegistry {
 }
 
 pub fn skill_subdir(agent_id: &str) -> &str {
-    coding_agent_spec(agent_id)
+    agent_spec(agent_id)
         .map(|spec| spec.skills_subdir)
         .unwrap_or("skills")
 }

@@ -1,24 +1,11 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use once_cell::sync::Lazy;
-
+use crate::agent::{AgentSpec, agent_spec, agent_specs, default_install_targets};
 use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillInstallStrategy {
-    Symlink,
-    Copy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderKind {
-    Claude,
-    Codex,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentInfo {
@@ -57,7 +44,7 @@ impl DetectCache {
     }
 
     pub fn agents_for_install(&self, kind: &ResourceKind) -> Vec<String> {
-        let ordered = ordered_agent_ids_for_resource_kind(kind);
+        let ordered = crate::agent::ordered_agent_ids_for_resource_kind(kind);
         let picked: Vec<_> = ordered
             .iter()
             .filter(|id| self.agents.contains_key(id.as_str()))
@@ -70,14 +57,13 @@ impl DetectCache {
         }
     }
 
-    /// Like [`Self::agents_for_install`], but only agents that support project-local skill dirs
-    /// (`CodingAgentSpec.supports_project_skills`). Used by `arc project apply` and project status.
+    /// Like [`Self::agents_for_install`], but only agents that support project-local skill dirs.
     pub fn agents_for_project_skill_install(&self, kind: &ResourceKind) -> Vec<String> {
         self.agents_for_install(kind)
             .into_iter()
             .filter(|id| {
-                coding_agent_spec(id)
-                    .map(|s| s.supports_project_skills)
+                agent_spec(id)
+                    .map(|spec| spec.supports_project_skills)
                     .unwrap_or(false)
             })
             .collect()
@@ -86,7 +72,7 @@ impl DetectCache {
 
 fn parallel_detect_all(paths: &ArcPaths) -> BTreeMap<String, AgentInfo> {
     std::thread::scope(|s| {
-        let handles: Vec<_> = CODING_AGENTS
+        let handles: Vec<_> = agent_specs()
             .iter()
             .map(|spec| s.spawn(|| (spec.id.to_string(), detect_from_spec(paths, spec))))
             .collect();
@@ -98,159 +84,13 @@ fn parallel_detect_all(paths: &ArcPaths) -> BTreeMap<String, AgentInfo> {
     })
 }
 
-#[derive(Debug, Clone)]
-/// Static configuration for one supported coding agent (executable, home layout, skills path, provider).
-pub struct CodingAgentSpec {
-    pub id: &'static str,
-    pub display_name: &'static str,
-    pub supports_skills: bool,
-    pub skill_install_strategy: SkillInstallStrategy,
-    pub executable: &'static str,
-    pub version_flag: &'static str,
-    /// Path parts relative to user home, e.g. `&[".claude"]` → `~/.claude`
-    pub home_parts: &'static [&'static str],
-    pub skills_subdir: &'static str,
-    /// When true, `arc project apply` may install required skills under the repo for this agent.
-    /// When false (e.g. OpenClaw), project-local skill paths are not used; use global `arc skill install` only.
-    pub supports_project_skills: bool,
-    /// Path segments under the **project root** (repo) where this agent loads skills, e.g.
-    /// `&[".claude", "skills"]` → `<repo>/.claude/skills/<name>/`. Ignored when `supports_project_skills` is false.
-    pub project_skills_parts: &'static [&'static str],
-    pub provider_kind: Option<ProviderKind>,
-    pub provider_seed: Option<&'static str>,
-}
-
-pub static CODING_AGENTS: Lazy<Vec<CodingAgentSpec>> = Lazy::new(|| {
-    vec![
-        CodingAgentSpec {
-            id: "claude",
-            display_name: "Claude Code",
-            supports_skills: true,
-            skill_install_strategy: SkillInstallStrategy::Symlink,
-            executable: "claude",
-            version_flag: "-v",
-            home_parts: &[".claude"],
-            skills_subdir: "skills",
-            supports_project_skills: true,
-            project_skills_parts: &[".claude", "skills"],
-            provider_kind: Some(ProviderKind::Claude),
-            provider_seed: Some(include_str!("provider/seed/claude.toml")),
-        },
-        CodingAgentSpec {
-            id: "codex",
-            display_name: "Codex",
-            supports_skills: true,
-            skill_install_strategy: SkillInstallStrategy::Symlink,
-            executable: "codex",
-            version_flag: "-V",
-            home_parts: &[".codex"],
-            skills_subdir: "skills",
-            supports_project_skills: true,
-            // Codex CLI project-local skills (see OpenAI Codex docs / .agents/skills)
-            project_skills_parts: &[".agents", "skills"],
-            provider_kind: Some(ProviderKind::Codex),
-            provider_seed: Some(include_str!("provider/seed/codex.toml")),
-        },
-        CodingAgentSpec {
-            id: "openclaw",
-            display_name: "OpenClaw",
-            supports_skills: true,
-            // Only OpenClaw uses directory copy for skills; all other agents use symlinks.
-            skill_install_strategy: SkillInstallStrategy::Copy,
-            executable: "openclaw",
-            version_flag: "-v",
-            home_parts: &[".openclaw"],
-            skills_subdir: "skills",
-            supports_project_skills: false,
-            project_skills_parts: &[],
-            provider_kind: None,
-            provider_seed: None,
-        },
-        CodingAgentSpec {
-            id: "cursor",
-            display_name: "Cursor CLI",
-            supports_skills: true,
-            skill_install_strategy: SkillInstallStrategy::Symlink,
-            executable: "agent",
-            version_flag: "-v",
-            home_parts: &[".cursor"],
-            skills_subdir: "skills-cursor",
-            supports_project_skills: true,
-            project_skills_parts: &[".cursor", "skills"],
-            provider_kind: None,
-            provider_seed: None,
-        },
-        CodingAgentSpec {
-            id: "opencode",
-            display_name: "OpenCode",
-            supports_skills: true,
-            skill_install_strategy: SkillInstallStrategy::Symlink,
-            executable: "opencode",
-            version_flag: "-v",
-            home_parts: &[".config", "opencode"],
-            skills_subdir: "skills",
-            supports_project_skills: true,
-            project_skills_parts: &[".opencode", "skills"],
-            provider_kind: None,
-            provider_seed: None,
-        },
-        CodingAgentSpec {
-            id: "gemini",
-            display_name: "Gemini CLI",
-            supports_skills: true,
-            skill_install_strategy: SkillInstallStrategy::Symlink,
-            executable: "gemini",
-            version_flag: "-v",
-            home_parts: &[".gemini"],
-            skills_subdir: "skills",
-            supports_project_skills: true,
-            project_skills_parts: &[".gemini", "skills"],
-            provider_kind: None,
-            provider_seed: None,
-        },
-        CodingAgentSpec {
-            id: "kimi",
-            display_name: "Kimi CLI",
-            supports_skills: true,
-            skill_install_strategy: SkillInstallStrategy::Symlink,
-            executable: "kimi",
-            version_flag: "--version",
-            home_parts: &[".kimi"],
-            skills_subdir: "skills",
-            supports_project_skills: true,
-            project_skills_parts: &[".kimi", "skills"],
-            provider_kind: None,
-            provider_seed: None,
-        },
-    ]
-});
-
-/// Alias for [`CodingAgentSpec`] (per-agent table row).
-pub type AgentConfig = CodingAgentSpec;
-
-/// Directory segment under an agent's home where resources of `kind` are installed.
-///
-/// For [`ResourceKind::Skill`], uses the agent's `skills_subdir` from [`coding_agent_spec`];
-/// for other kinds, uses [`ResourceKind::as_str`].
-pub fn resource_install_subdir(kind: &ResourceKind, agent_name: &str) -> String {
-    if matches!(kind, ResourceKind::Skill)
-        && let Some(spec) = coding_agent_spec(agent_name)
-    {
-        return spec.skills_subdir.to_string();
-    }
-    kind.as_str().to_string()
-}
-
 pub fn detect_agent(paths: &ArcPaths, name: &str) -> Result<AgentInfo, String> {
-    let spec = CODING_AGENTS
-        .iter()
-        .find(|spec| spec.id == name)
-        .ok_or_else(|| format!("unknown agent: {name}"))?;
+    let spec = agent_spec(name).ok_or_else(|| format!("unknown agent: {name}"))?;
     Ok(detect_from_spec(paths, spec))
 }
 
 pub fn detect_all_agents(paths: &ArcPaths) -> BTreeMap<String, AgentInfo> {
-    CODING_AGENTS
+    agent_specs()
         .iter()
         .map(|spec| (spec.id.to_string(), detect_from_spec(paths, spec)))
         .filter(|(_, info)| info.detected)
@@ -262,7 +102,7 @@ pub fn get_detected_agents(paths: &ArcPaths) -> Vec<String> {
 }
 
 pub fn detect_agents_for_install(paths: &ArcPaths, kind: &ResourceKind) -> Vec<String> {
-    let ordered = ordered_agent_ids_for_resource_kind(kind);
+    let ordered = crate::agent::ordered_agent_ids_for_resource_kind(kind);
     let detected = detect_all_agents(paths);
     let picked: Vec<_> = ordered
         .iter()
@@ -276,45 +116,11 @@ pub fn detect_agents_for_install(paths: &ArcPaths, kind: &ResourceKind) -> Vec<S
     }
 }
 
-pub fn ordered_agent_ids_for_resource_kind(kind: &ResourceKind) -> Vec<String> {
-    CODING_AGENTS
-        .iter()
-        .filter(|spec| matches!(kind, ResourceKind::Skill) && spec.supports_skills)
-        .map(|spec| spec.id.to_string())
-        .collect()
-}
-
-pub fn default_install_targets(kind: &ResourceKind) -> Vec<String> {
-    ordered_agent_ids_for_resource_kind(kind)
-}
-
-pub fn coding_agent_spec(id: &str) -> Option<&'static CodingAgentSpec> {
-    CODING_AGENTS.iter().find(|spec| spec.id == id)
-}
-
-/// Returns `<project_root>/<...project_skills_parts>/<skill_name>/` for this agent's project-local
-/// skill layout (e.g. `<repo>/.claude/skills/<name>`).
-pub fn project_skill_path(
-    project_root: &Path,
-    agent_id: &str,
-    skill_name: &str,
-) -> Option<PathBuf> {
-    let spec = coding_agent_spec(agent_id)?;
-    if !spec.supports_project_skills {
-        return None;
-    }
-    let mut p = project_root.to_path_buf();
-    for part in spec.project_skills_parts {
-        p = p.join(part);
-    }
-    Some(p.join(skill_name))
-}
-
 /// True if `skill_name` exists under the project tree for **every** detected agent that supports
 /// project-local skills. Used by `arc project apply` to decide whether replication is still needed.
 pub fn project_skills_satisfied_all(
     cache: &DetectCache,
-    project_root: &Path,
+    project_root: &std::path::Path,
     skill_name: &str,
 ) -> bool {
     let targets = cache.agents_for_project_skill_install(&ResourceKind::Skill);
@@ -322,8 +128,8 @@ pub fn project_skills_satisfied_all(
         return false;
     }
     targets.iter().all(|agent_id| {
-        project_skill_path(project_root, agent_id, skill_name)
-            .map(|p| p.exists())
+        crate::agent::project_skill_path(project_root, agent_id, skill_name)
+            .map(|path| path.exists())
             .unwrap_or(false)
     })
 }
@@ -332,7 +138,7 @@ pub fn project_skills_satisfied_all(
 /// Used by `arc status` to report whether anything is materialized in the repo.
 pub fn project_skills_satisfied_any(
     cache: &DetectCache,
-    project_root: &Path,
+    project_root: &std::path::Path,
     skill_name: &str,
 ) -> bool {
     let targets = cache.agents_for_project_skill_install(&ResourceKind::Skill);
@@ -340,13 +146,13 @@ pub fn project_skills_satisfied_any(
         return false;
     }
     targets.iter().any(|agent_id| {
-        project_skill_path(project_root, agent_id, skill_name)
-            .map(|p| p.exists())
+        crate::agent::project_skill_path(project_root, agent_id, skill_name)
+            .map(|path| path.exists())
             .unwrap_or(false)
     })
 }
 
-fn detect_from_spec(paths: &ArcPaths, spec: &CodingAgentSpec) -> AgentInfo {
+fn detect_from_spec(paths: &ArcPaths, spec: &AgentSpec) -> AgentInfo {
     let (executable, version) = detect_executable(spec);
     let detected = executable.is_some();
     let root = detected.then(|| paths.user_home().join(spec.home_parts.join("/")));
@@ -359,7 +165,7 @@ fn detect_from_spec(paths: &ArcPaths, spec: &CodingAgentSpec) -> AgentInfo {
     }
 }
 
-fn detect_executable(spec: &CodingAgentSpec) -> (Option<String>, Option<String>) {
+fn detect_executable(spec: &AgentSpec) -> (Option<String>, Option<String>) {
     let Some(path) = resolve_executable_path(spec.executable) else {
         return (None, None);
     };
@@ -379,7 +185,7 @@ fn resolve_executable_path(name: &str) -> Option<String> {
         .ok()
         .filter(|out| out.status.success())
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|v| !v.is_empty())
+        .filter(|value| !value.is_empty())
 }
 
 fn command_output_with_timeout(executable: &str, arg: &str, timeout: Duration) -> Option<Output> {
@@ -412,8 +218,8 @@ fn command_output_with_timeout(executable: &str, arg: &str, timeout: Duration) -
 pub fn extract_version(output: &str) -> Option<String> {
     let line = output.lines().next().unwrap_or("").trim();
     line.split_whitespace()
-        .find(|t| t.starts_with(|c: char| c.is_ascii_digit()) && t.contains('.'))
-        .map(|t| t.to_string())
+        .find(|token| token.starts_with(|ch: char| ch.is_ascii_digit()) && token.contains('.'))
+        .map(|token| token.to_string())
 }
 
 #[cfg(test)]
