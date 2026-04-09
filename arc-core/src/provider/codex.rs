@@ -1,14 +1,30 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+
 use log::info;
 use serde_json::{Map, Value};
 
 use crate::error::{ArcError, Result};
 use crate::io::{
-    atomic_write_string, read_json_map, read_to_string_if_exists, read_toml_table,
-    write_json_pretty, write_toml_pretty,
+    atomic_write_string, read_to_string_if_exists, read_toml_table, write_json_pretty,
+    write_toml_pretty,
 };
 use crate::paths::ArcPaths;
 
 use super::{CodexProviderConfig, ProviderInfo, ProviderSettings};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CodexProviderMode {
+    AuthOnly,
+    Proxy,
+}
+
+#[derive(Debug)]
+struct FileState {
+    path: PathBuf,
+    previous: Option<String>,
+}
 
 pub fn parse_provider_config(section: &toml::Table) -> ProviderSettings {
     ProviderSettings::Codex(CodexProviderConfig {
@@ -45,84 +61,80 @@ pub fn apply_provider(
     let auth_path = paths.user_home().join(".codex").join("auth.json");
     let config_path = paths.user_home().join(".codex").join("config.toml");
     let providers_path = paths.providers_dir().join("codex.toml");
-    let auth_before = read_to_string_if_exists(&auth_path)
-        .map_err(|err| ArcError::new(format!("failed to read Codex auth config: {err}")))?;
-    let config_before = read_to_string_if_exists(&config_path)
-        .map_err(|err| ArcError::new(format!("failed to read Codex config.toml: {err}")))?;
-    let providers_before = read_to_string_if_exists(&providers_path)
-        .map_err(|err| ArcError::new(format!("failed to read Codex provider registry: {err}")))?;
-    let snapshot_update = prepare_old_auth_snapshot_update(paths, old)?;
+    let new_mode = provider_mode(config)?;
+    let mut tracked_paths = vec![
+        auth_path.clone(),
+        config_path.clone(),
+        providers_path.clone(),
+    ];
+    if let Some(old) = old {
+        tracked_paths.push(snapshot_path(paths, &old.name));
+    }
+    tracked_paths.push(snapshot_path(paths, &new.name));
+    let previous_states = capture_file_states(&tracked_paths)?;
 
     let apply_result = (|| {
-        write_auth_config(paths, config)?;
+        let mut providers = read_toml_table(&providers_path);
+        let mut providers_dirty = false;
+
+        if let Some(old) = old {
+            snapshot_current_auth(paths, old, &auth_path, &mut providers, &mut providers_dirty)?;
+        }
+
+        let target_snapshot =
+            resolve_target_auth_snapshot(paths, new, &mut providers, &mut providers_dirty)?;
+        write_auth_config(paths, config, new_mode, target_snapshot.as_deref())?;
         write_main_config(paths, new, config)?;
-        if let Some(updated_registry) = &snapshot_update {
-            atomic_write_string(&providers_path, updated_registry).map_err(|err| {
-                ArcError::new(format!("failed to snapshot Codex auth config: {err}"))
+        if providers_dirty {
+            write_toml_pretty(&providers_path, &toml::Value::Table(providers)).map_err(|err| {
+                ArcError::new(format!("failed to update Codex provider registry: {err}"))
             })?;
         }
         Ok(())
     })();
 
     if let Err(err) = apply_result {
-        rollback_file_state(&auth_path, auth_before.as_deref())?;
-        rollback_file_state(&config_path, config_before.as_deref())?;
-        rollback_file_state(&providers_path, providers_before.as_deref())?;
+        rollback_file_states(&previous_states)?;
         return Err(err);
     }
 
     Ok(())
 }
 
-fn write_auth_config(paths: &ArcPaths, config: &CodexProviderConfig) -> Result<()> {
-    if let Some(auth_json) = &config.auth_json {
-        if let Some(api_key) = &config.api_key {
-            return restore_auth_snapshot_with_api_key(paths, auth_json, api_key);
-        }
-        return restore_auth_snapshot(paths, auth_json);
-    }
-
+fn write_auth_config(
+    paths: &ArcPaths,
+    config: &CodexProviderConfig,
+    mode: CodexProviderMode,
+    auth_snapshot: Option<&str>,
+) -> Result<()> {
     let auth_path = paths.user_home().join(".codex").join("auth.json");
-    let mut auth = read_json_map(&auth_path);
-    auth.insert(
-        "OPENAI_API_KEY".to_string(),
-        config
-            .api_key
-            .clone()
-            .map(Value::String)
-            .unwrap_or(Value::Null),
-    );
-    write_json_pretty(&auth_path, &Value::Object(auth))
-        .map_err(|err| ArcError::new(format!("failed to write Codex auth config: {err}")))
+    match mode {
+        CodexProviderMode::AuthOnly => match auth_snapshot {
+            Some(auth_json) => restore_auth_snapshot(paths, auth_json),
+            None => clear_auth_config(&auth_path),
+        },
+        CodexProviderMode::Proxy => {
+            let api_key = config.api_key.as_deref().ok_or_else(|| {
+                ArcError::new("failed to write Codex auth config: missing api_key".to_string())
+            })?;
+            let auth = Value::Object(Map::from_iter([(
+                "OPENAI_API_KEY".to_string(),
+                Value::String(api_key.to_string()),
+            )]));
+            write_json_pretty(&auth_path, &auth)
+                .map_err(|err| ArcError::new(format!("failed to write Codex auth config: {err}")))
+        }
+    }
 }
 
 fn restore_auth_snapshot(paths: &ArcPaths, auth_json: &str) -> Result<()> {
-    parse_auth_snapshot(auth_json, "restore")?;
+    let Some(normalized) = normalized_auth_snapshot(auth_json, "restore")? else {
+        let auth_path = paths.user_home().join(".codex").join("auth.json");
+        return clear_auth_config(&auth_path);
+    };
     let auth_path = paths.user_home().join(".codex").join("auth.json");
-    atomic_write_string(&auth_path, auth_json)
+    atomic_write_string(&auth_path, &normalized)
         .map_err(|err| ArcError::new(format!("failed to restore Codex auth snapshot: {err}")))
-}
-
-fn restore_auth_snapshot_with_api_key(
-    paths: &ArcPaths,
-    auth_json: &str,
-    api_key: &str,
-) -> Result<()> {
-    let mut auth = parse_auth_snapshot(auth_json, "restore")?;
-    let current = auth.get("OPENAI_API_KEY").and_then(Value::as_str);
-    if current != Some(api_key) {
-        auth.insert(
-            "OPENAI_API_KEY".to_string(),
-            Value::String(api_key.to_string()),
-        );
-    }
-
-    let auth_path = paths.user_home().join(".codex").join("auth.json");
-    write_json_pretty(&auth_path, &Value::Object(auth)).map_err(|err| {
-        ArcError::new(format!(
-            "failed to restore Codex auth snapshot with api_key override: {err}"
-        ))
-    })
 }
 
 fn parse_auth_snapshot(auth_json: &str, action: &str) -> Result<Map<String, Value>> {
@@ -135,44 +147,213 @@ fn parse_auth_snapshot(auth_json: &str, action: &str) -> Result<Map<String, Valu
     })
 }
 
-fn prepare_old_auth_snapshot_update(
+fn provider_mode(config: &CodexProviderConfig) -> Result<CodexProviderMode> {
+    match (config.base_url.as_deref(), config.api_key.as_deref()) {
+        (None, None) => Ok(CodexProviderMode::AuthOnly),
+        (Some(_), Some(_)) => Ok(CodexProviderMode::Proxy),
+        (Some(_), None) => Err(ArcError::new(
+            "invalid Codex provider: base_url requires api_key".to_string(),
+        )),
+        (None, Some(_)) => Err(ArcError::new(
+            "invalid Codex provider: api_key requires base_url".to_string(),
+        )),
+    }
+}
+
+fn is_auth_only(config: &CodexProviderConfig) -> bool {
+    config.api_key.is_none() && config.base_url.is_none()
+}
+
+fn snapshot_current_auth(
     paths: &ArcPaths,
-    old: Option<&ProviderInfo>,
-) -> Result<Option<String>> {
-    let Some(old) = old else {
-        return Ok(None);
-    };
+    old: &ProviderInfo,
+    auth_path: &Path,
+    providers: &mut toml::Table,
+    providers_dirty: &mut bool,
+) -> Result<()> {
     let ProviderSettings::Codex(config) = &old.settings else {
+        return Ok(());
+    };
+    if !is_auth_only(config) {
+        cleanup_legacy_auth_json(providers, &old.name, providers_dirty);
+        return Ok(());
+    }
+
+    let Some(auth_json) = read_to_string_if_exists(auth_path)
+        .map_err(|err| ArcError::new(format!("failed to read Codex auth config: {err}")))?
+    else {
+        clear_snapshot_file(&snapshot_path(paths, &old.name))?;
+        cleanup_legacy_auth_json(providers, &old.name, providers_dirty);
+        return Ok(());
+    };
+
+    let Some(normalized) = normalized_auth_snapshot(&auth_json, "snapshot")? else {
+        clear_snapshot_file(&snapshot_path(paths, &old.name))?;
+        cleanup_legacy_auth_json(providers, &old.name, providers_dirty);
+        return Ok(());
+    };
+    atomic_write_string(&snapshot_path(paths, &old.name), &normalized)
+        .map_err(|err| ArcError::new(format!("failed to write Codex auth snapshot: {err}")))?;
+    cleanup_legacy_auth_json(providers, &old.name, providers_dirty);
+    Ok(())
+}
+
+fn resolve_target_auth_snapshot(
+    paths: &ArcPaths,
+    provider: &ProviderInfo,
+    providers: &mut toml::Table,
+    providers_dirty: &mut bool,
+) -> Result<Option<String>> {
+    let ProviderSettings::Codex(config) = &provider.settings else {
         return Ok(None);
     };
-    if config.api_key.is_some() || config.base_url.is_some() {
+    if !is_auth_only(config) {
+        cleanup_legacy_auth_json(providers, &provider.name, providers_dirty);
         return Ok(None);
     }
 
-    let auth_path = paths.user_home().join(".codex").join("auth.json");
-    let Some(auth_json) = read_to_string_if_exists(&auth_path)
-        .map_err(|err| ArcError::new(format!("failed to read Codex auth config: {err}")))?
-    else {
+    let snapshot_path = snapshot_path(paths, &provider.name);
+    if let Some(auth_json) = read_snapshot_file(&snapshot_path)? {
+        return Ok(Some(auth_json));
+    }
+
+    let legacy_auth_json = cleanup_legacy_auth_json(providers, &provider.name, providers_dirty)
+        .or_else(|| config.auth_json.clone());
+    let Some(auth_json) = legacy_auth_json else {
         return Ok(None);
     };
 
-    parse_auth_snapshot(&auth_json, "snapshot")?;
+    let Some(normalized) = normalized_auth_snapshot(&auth_json, "migrate")? else {
+        clear_snapshot_file(&snapshot_path)?;
+        return Ok(None);
+    };
+    atomic_write_string(&snapshot_path, &normalized)
+        .map_err(|err| ArcError::new(format!("failed to write Codex auth snapshot: {err}")))?;
+    Ok(Some(normalized))
+}
 
-    let providers_path = paths.providers_dir().join("codex.toml");
-    let mut providers = read_toml_table(&providers_path);
+fn cleanup_legacy_auth_json(
+    providers: &mut toml::Table,
+    provider_name: &str,
+    providers_dirty: &mut bool,
+) -> Option<String> {
     let section = providers
-        .get_mut(&old.name)
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| {
+        .get_mut(provider_name)
+        .and_then(toml::Value::as_table_mut)?;
+    let auth_json = section.remove("auth_json")?.as_str().map(str::to_string)?;
+    *providers_dirty = true;
+    Some(auth_json)
+}
+
+fn clear_auth_config(path: &Path) -> Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|err| {
             ArcError::new(format!(
-                "failed to snapshot Codex auth config: provider '{}' not found",
-                old.name
+                "failed to clear Codex auth config {}: {err}",
+                path.display()
             ))
         })?;
-    section.insert("auth_json".to_string(), toml::Value::String(auth_json));
-    toml::to_string_pretty(&toml::Value::Table(providers))
+    }
+    Ok(())
+}
+
+fn clear_snapshot_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|err| {
+            ArcError::new(format!(
+                "failed to clear Codex auth snapshot {}: {err}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn snapshot_path(paths: &ArcPaths, provider_name: &str) -> PathBuf {
+    paths
+        .state_dir()
+        .join("providers")
+        .join("codex")
+        .join(format!(
+            "{}.auth.json",
+            sanitize_provider_name(provider_name)
+        ))
+}
+
+fn sanitize_provider_name(provider_name: &str) -> String {
+    let mut sanitized = provider_name
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
+            _ => '_',
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        sanitized = "provider".to_string();
+    }
+    if sanitized == provider_name {
+        return sanitized;
+    }
+    let mut hasher = DefaultHasher::new();
+    provider_name.hash(&mut hasher);
+    format!("{sanitized}-{:016x}", hasher.finish())
+}
+
+fn read_snapshot_file(path: &Path) -> Result<Option<String>> {
+    let Some(auth_json) = read_to_string_if_exists(path)
+        .map_err(|err| ArcError::new(format!("failed to read Codex auth snapshot: {err}")))?
+    else {
+        return Ok(None);
+    };
+    let Some(normalized) = normalized_auth_snapshot(&auth_json, "restore")? else {
+        clear_snapshot_file(path)?;
+        return Ok(None);
+    };
+    if normalized != auth_json {
+        atomic_write_string(path, &normalized).map_err(|err| {
+            ArcError::new(format!("failed to normalize Codex auth snapshot: {err}"))
+        })?;
+    }
+    Ok(Some(normalized))
+}
+
+fn normalized_auth_snapshot(auth_json: &str, action: &str) -> Result<Option<String>> {
+    let mut auth = parse_auth_snapshot(auth_json, action)?;
+    if matches!(auth.get("OPENAI_API_KEY"), Some(Value::Null)) {
+        auth.remove("OPENAI_API_KEY");
+    }
+    if auth.is_empty() {
+        return Ok(None);
+    }
+    let mut bytes = serde_json::to_vec_pretty(&Value::Object(auth))
+        .map_err(|err| ArcError::new(format!("failed to serialize Codex auth snapshot: {err}")))?;
+    bytes.push(b'\n');
+    String::from_utf8(bytes)
         .map(Some)
-        .map_err(|err| ArcError::new(format!("failed to snapshot Codex auth config: {err}")))
+        .map_err(|err| ArcError::new(format!("failed to serialize Codex auth snapshot: {err}")))
+}
+
+fn capture_file_states(paths: &[PathBuf]) -> Result<Vec<FileState>> {
+    let mut unique_paths = paths.to_vec();
+    unique_paths.sort();
+    unique_paths.dedup();
+
+    unique_paths
+        .into_iter()
+        .map(|path| {
+            let previous = read_to_string_if_exists(&path).map_err(|err| {
+                ArcError::new(format!("failed to read {}: {err}", path.display()))
+            })?;
+            Ok(FileState { path, previous })
+        })
+        .collect()
+}
+
+fn rollback_file_states(states: &[FileState]) -> Result<()> {
+    for state in states.iter().rev() {
+        rollback_file_state(&state.path, state.previous.as_deref())?;
+    }
+    Ok(())
 }
 
 fn write_main_config(

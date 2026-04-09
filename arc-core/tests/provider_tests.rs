@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use arc_core::detect::DetectCache;
 use arc_core::paths::ArcPaths;
@@ -8,6 +9,28 @@ use arc_core::provider::{
     load_providers_for_agent, read_active_provider, seed_default_providers,
     supported_provider_agents, supports_provider_agent, write_active_provider,
 };
+
+fn codex_snapshot_path(root: &Path, provider_name: &str) -> PathBuf {
+    root.join(".arc-cli")
+        .join("backups")
+        .join("state")
+        .join("providers")
+        .join("codex")
+        .join(format!("{provider_name}.auth.json"))
+}
+
+fn write_codex_snapshot(root: &Path, provider_name: &str, body: &str) {
+    let path = codex_snapshot_path(root, provider_name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, body).unwrap();
+}
+
+fn load_codex_provider(paths: &ArcPaths, name: &str) -> ProviderInfo {
+    load_providers_for_agent(&paths.providers_dir(), "codex")
+        .into_iter()
+        .find(|provider| provider.name == name)
+        .unwrap_or_else(|| panic!("missing provider '{name}'"))
+}
 
 #[test]
 fn provider_switch_writes_claude_settings() {
@@ -86,15 +109,23 @@ fn provider_switch_clears_old_claude_env_vars() {
 }
 
 #[test]
-fn provider_switch_writes_codex_auth() {
+fn provider_switch_writes_codex_proxy_auth_with_only_api_key() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ArcPaths::with_user_home(temp.path());
+    let codex_dir = temp.path().join(".codex");
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(
+        codex_dir.join("auth.json"),
+        "{\n  \"refresh_token\": \"stale\"\n}\n",
+    )
+    .unwrap();
     let provider = ProviderInfo {
-        name: "openai".to_string(),
-        display_name: "OpenAI".to_string(),
+        name: "proxy".to_string(),
+        display_name: "Proxy".to_string(),
         description: String::new(),
         agent: "codex".to_string(),
         settings: ProviderSettings::Codex(CodexProviderConfig {
+            base_url: Some("https://example.com".to_string()),
             api_key: Some("sk-test".to_string()),
             ..Default::default()
         }),
@@ -103,7 +134,7 @@ fn provider_switch_writes_codex_auth() {
     apply_provider(&paths, &provider).unwrap();
     let auth_path = temp.path().join(".codex").join("auth.json");
     let content = fs::read_to_string(auth_path).unwrap();
-    assert!(content.contains("OPENAI_API_KEY"));
+    assert_eq!(content, "{\n  \"OPENAI_API_KEY\": \"sk-test\"\n}\n");
 }
 
 #[test]
@@ -131,11 +162,12 @@ fn provider_switch_snapshots_codex_auth_for_auth_provider() {
     apply_provider(&paths, &proxy).unwrap();
 
     let providers_content = fs::read_to_string(providers_dir.join("codex.toml")).unwrap();
-    assert!(providers_content.contains("auth_json"));
-    assert!(providers_content.contains("account_id"));
+    assert!(!providers_content.contains("auth_json"));
 
+    let snapshot = fs::read_to_string(codex_snapshot_path(temp.path(), "official")).unwrap();
+    assert_eq!(snapshot, original_auth);
     let auth_content = fs::read_to_string(codex_dir.join("auth.json")).unwrap();
-    assert!(auth_content.contains("\"OPENAI_API_KEY\": \"sk-proxy\""));
+    assert_eq!(auth_content, "{\n  \"OPENAI_API_KEY\": \"sk-proxy\"\n}\n");
 }
 
 #[test]
@@ -181,11 +213,13 @@ fn provider_switch_clears_codex_model_provider_for_official() {
         display_name: "Official".to_string(),
         description: String::new(),
         agent: "codex".to_string(),
-        settings: ProviderSettings::Codex(CodexProviderConfig {
-            auth_json: Some("{\n  \"id_token\": \"id_tok\"\n}\n".to_string()),
-            ..Default::default()
-        }),
+        settings: ProviderSettings::Codex(CodexProviderConfig::default()),
     };
+    write_codex_snapshot(
+        temp.path(),
+        "official",
+        "{\n  \"id_token\": \"id_tok\"\n}\n",
+    );
 
     apply_provider(&paths, &provider).unwrap();
     let content = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
@@ -211,13 +245,13 @@ fn provider_switch_restores_codex_auth_snapshot_for_official() {
         display_name: "Official".to_string(),
         description: String::new(),
         agent: "codex".to_string(),
-        settings: ProviderSettings::Codex(CodexProviderConfig {
-            auth_json: Some(
-                "{\n  \"account_id\": \"acct_123\",\n  \"id_token\": \"id_tok\",\n  \"refresh_token\": \"ref_tok\"\n}\n".to_string(),
-            ),
-            ..Default::default()
-        }),
+        settings: ProviderSettings::Codex(CodexProviderConfig::default()),
     };
+    write_codex_snapshot(
+        temp.path(),
+        "official",
+        "{\n  \"account_id\": \"acct_123\",\n  \"id_token\": \"id_tok\",\n  \"refresh_token\": \"ref_tok\"\n}\n",
+    );
 
     apply_provider(&paths, &provider).unwrap();
     let content = fs::read_to_string(codex_dir.join("auth.json")).unwrap();
@@ -228,32 +262,85 @@ fn provider_switch_restores_codex_auth_snapshot_for_official() {
 }
 
 #[test]
-fn provider_switch_restores_codex_auth_snapshot_and_overrides_mismatched_api_key() {
+fn provider_switch_distinguishes_multiple_auth_only_profiles() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ArcPaths::with_user_home(temp.path());
+    let providers_dir = paths.providers_dir();
     let codex_dir = temp.path().join(".codex");
+    fs::create_dir_all(&providers_dir).unwrap();
     fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(
+        providers_dir.join("codex.toml"),
+        "[work]\ndisplay_name = \"Work\"\ndescription = \"work auth\"\n\n[personal]\ndisplay_name = \"Personal\"\ndescription = \"personal auth\"\n\n[proxy_a]\ndisplay_name = \"Proxy A\"\napi_key = \"sk-a\"\nbase_url = \"https://a.example.com\"\n\n[proxy_b]\ndisplay_name = \"Proxy B\"\napi_key = \"sk-b\"\nbase_url = \"https://b.example.com\"\n",
+    )
+    .unwrap();
+    write_active_provider(&providers_dir, "codex", "work").unwrap();
+    let work_auth = "{\n  \"account_id\": \"acct_work\",\n  \"refresh_token\": \"work_tok\"\n}\n";
+    let personal_auth =
+        "{\n  \"account_id\": \"acct_personal\",\n  \"refresh_token\": \"personal_tok\"\n}\n";
+    fs::write(codex_dir.join("auth.json"), work_auth).unwrap();
 
-    let provider = ProviderInfo {
-        name: "hybrid".to_string(),
-        display_name: "Hybrid".to_string(),
-        description: String::new(),
-        agent: "codex".to_string(),
-        settings: ProviderSettings::Codex(CodexProviderConfig {
-            api_key: Some("sk-new".to_string()),
-            auth_json: Some(
-                "{\n  \"OPENAI_API_KEY\": \"sk-old\",\n  \"refresh_token\": \"ref_tok\"\n}\n"
-                    .to_string(),
-            ),
-            ..Default::default()
-        }),
-    };
+    apply_provider(&paths, &load_codex_provider(&paths, "proxy_a")).unwrap();
+    assert_eq!(
+        fs::read_to_string(codex_dir.join("auth.json")).unwrap(),
+        "{\n  \"OPENAI_API_KEY\": \"sk-a\"\n}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(codex_snapshot_path(temp.path(), "work")).unwrap(),
+        work_auth
+    );
 
-    apply_provider(&paths, &provider).unwrap();
-    let content = fs::read_to_string(codex_dir.join("auth.json")).unwrap();
-    assert!(content.contains("\"OPENAI_API_KEY\": \"sk-new\""));
-    assert!(content.contains("\"refresh_token\": \"ref_tok\""));
-    assert!(!content.contains("\"OPENAI_API_KEY\": \"sk-old\""));
+    apply_provider(&paths, &load_codex_provider(&paths, "personal")).unwrap();
+    assert!(!codex_dir.join("auth.json").exists());
+
+    fs::write(codex_dir.join("auth.json"), personal_auth).unwrap();
+    apply_provider(&paths, &load_codex_provider(&paths, "proxy_b")).unwrap();
+    assert_eq!(
+        fs::read_to_string(codex_dir.join("auth.json")).unwrap(),
+        "{\n  \"OPENAI_API_KEY\": \"sk-b\"\n}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(codex_snapshot_path(temp.path(), "personal")).unwrap(),
+        personal_auth
+    );
+
+    apply_provider(&paths, &load_codex_provider(&paths, "work")).unwrap();
+    assert_eq!(
+        fs::read_to_string(codex_dir.join("auth.json")).unwrap(),
+        work_auth
+    );
+
+    apply_provider(&paths, &load_codex_provider(&paths, "personal")).unwrap();
+    assert_eq!(
+        fs::read_to_string(codex_dir.join("auth.json")).unwrap(),
+        personal_auth
+    );
+}
+
+#[test]
+fn provider_switch_to_fresh_auth_only_removes_proxy_auth_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ArcPaths::with_user_home(temp.path());
+    let providers_dir = paths.providers_dir();
+    let codex_dir = temp.path().join(".codex");
+    fs::create_dir_all(&providers_dir).unwrap();
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(
+        providers_dir.join("codex.toml"),
+        "[auth_only]\ndisplay_name = \"Auth Only\"\ndescription = \"fresh login\"\n\n[proxy]\ndisplay_name = \"Proxy\"\napi_key = \"sk-proxy\"\nbase_url = \"https://proxy.example.com\"\n",
+    )
+    .unwrap();
+    write_active_provider(&providers_dir, "codex", "proxy").unwrap();
+    fs::write(
+        codex_dir.join("auth.json"),
+        "{\n  \"OPENAI_API_KEY\": \"sk-proxy\"\n}\n",
+    )
+    .unwrap();
+
+    apply_provider(&paths, &load_codex_provider(&paths, "auth_only")).unwrap();
+
+    assert!(!codex_dir.join("auth.json").exists());
+    assert!(!codex_snapshot_path(temp.path(), "auth_only").exists());
 }
 
 #[test]
@@ -292,6 +379,98 @@ fn provider_switch_rolls_back_codex_auth_when_config_write_fails() {
     let config = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
     assert!(auth.contains("\"OPENAI_API_KEY\": \"sk-old\""));
     assert!(config.contains("model_providers = \"broken\""));
+}
+
+#[test]
+fn provider_switch_migrates_legacy_auth_snapshot_into_state_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ArcPaths::with_user_home(temp.path());
+    let providers_dir = paths.providers_dir();
+    let codex_dir = temp.path().join(".codex");
+    fs::create_dir_all(&providers_dir).unwrap();
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(
+        providers_dir.join("codex.toml"),
+        "[official]\ndisplay_name = \"OpenAI\"\nauth_json = '{\"account_id\":\"acct_123\",\"refresh_token\":\"ref_tok\"}'\n",
+    )
+    .unwrap();
+    fs::write(
+        codex_dir.join("auth.json"),
+        "{\n  \"OPENAI_API_KEY\": \"sk-proxy\"\n}\n",
+    )
+    .unwrap();
+
+    apply_provider(&paths, &load_codex_provider(&paths, "official")).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(codex_dir.join("auth.json")).unwrap(),
+        "{\n  \"account_id\": \"acct_123\",\n  \"refresh_token\": \"ref_tok\"\n}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(codex_snapshot_path(temp.path(), "official")).unwrap(),
+        "{\n  \"account_id\": \"acct_123\",\n  \"refresh_token\": \"ref_tok\"\n}\n"
+    );
+    let providers_content = fs::read_to_string(providers_dir.join("codex.toml")).unwrap();
+    assert!(!providers_content.contains("auth_json"));
+}
+
+#[test]
+fn provider_switch_ignores_null_openai_api_key_in_legacy_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ArcPaths::with_user_home(temp.path());
+    let providers_dir = paths.providers_dir();
+    let codex_dir = temp.path().join(".codex");
+    fs::create_dir_all(&providers_dir).unwrap();
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(
+        providers_dir.join("codex.toml"),
+        "[official]\ndisplay_name = \"OpenAI\"\nauth_json = '{\"OPENAI_API_KEY\":null}'\n",
+    )
+    .unwrap();
+    fs::write(
+        codex_dir.join("auth.json"),
+        "{\n  \"OPENAI_API_KEY\": \"sk-proxy\"\n}\n",
+    )
+    .unwrap();
+
+    apply_provider(&paths, &load_codex_provider(&paths, "official")).unwrap();
+
+    assert!(!codex_dir.join("auth.json").exists());
+    assert!(!codex_snapshot_path(temp.path(), "official").exists());
+    let providers_content = fs::read_to_string(providers_dir.join("codex.toml")).unwrap();
+    assert!(!providers_content.contains("auth_json"));
+}
+
+#[test]
+fn provider_switch_rejects_partial_codex_proxy_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ArcPaths::with_user_home(temp.path());
+    let only_api_key = ProviderInfo {
+        name: "broken-a".to_string(),
+        display_name: "Broken A".to_string(),
+        description: String::new(),
+        agent: "codex".to_string(),
+        settings: ProviderSettings::Codex(CodexProviderConfig {
+            api_key: Some("sk-test".to_string()),
+            ..Default::default()
+        }),
+    };
+    let only_base_url = ProviderInfo {
+        name: "broken-b".to_string(),
+        display_name: "Broken B".to_string(),
+        description: String::new(),
+        agent: "codex".to_string(),
+        settings: ProviderSettings::Codex(CodexProviderConfig {
+            base_url: Some("https://example.com".to_string()),
+            ..Default::default()
+        }),
+    };
+
+    let err = apply_provider(&paths, &only_api_key).unwrap_err();
+    assert!(err.message.contains("api_key requires base_url"));
+
+    let err = apply_provider(&paths, &only_base_url).unwrap_err();
+    assert!(err.message.contains("base_url requires api_key"));
 }
 
 #[test]

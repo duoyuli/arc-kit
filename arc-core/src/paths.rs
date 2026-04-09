@@ -94,6 +94,10 @@ impl ArcPaths {
         self.arc_home.join("tracking")
     }
 
+    pub fn state_dir(&self) -> PathBuf {
+        self.arc_home.join("backups").join("state")
+    }
+
     pub fn builtin_cache_dir(&self) -> PathBuf {
         self.arc_home.join("cache").join("built-in")
     }
@@ -104,6 +108,7 @@ impl ArcPaths {
         std::fs::create_dir_all(self.mcps_dir())?;
         std::fs::create_dir_all(self.subagents_dir())?;
         std::fs::create_dir_all(self.tracking_dir())?;
+        std::fs::create_dir_all(self.state_dir())?;
         Ok(())
     }
 

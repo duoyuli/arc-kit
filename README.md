@@ -19,7 +19,7 @@
 **1. Provider 统一管理**
 
 执行 `arc provider use <name> [--agent <agent>]` 切换 provider profile；若要按项目统一对齐 provider，可在 `arc.toml` 中声明 `[provider]` 后执行 `arc project apply`。自动备份，随时可回滚。支持官方直连、镜像代理、中转站、国内平替等。
-其中 Codex 官方 auth 登录态会在切换时自动保存 `auth.json` 快照，切回后恢复，避免登录信息被覆盖。
+其中 Codex 的 auth-only provider 会按 provider 名分别保存 `auth.json` 快照；切到中转站时 `auth.json` 会被重写为仅含 `OPENAI_API_KEY`，切回对应 auth provider 时再恢复该 provider 自己的登录态。
 
 **2. Skill 一处管理，多处使用**
 

@@ -142,13 +142,13 @@ base_url = "https://proxy.example.com"
 
 [openai]
 display_name = "OpenAI Official"
-api_key = "sk-xxx"
+description = "Use Codex auth login"
 ```
 
+- `proxy` provider 必须同时提供 `base_url` + `api_key`
 - 有 `base_url` 时写入 `~/.codex/config.toml` 的 `model_provider` + `model_providers.<name>`
-- 无 `base_url` 时清除 `model_provider`（回到官方直连）
-- `api_key` 写入 `~/.codex/auth.json`
-- 仅含 `display_name` / `description` 的官方 auth provider，会在切离时自动快照当前 `auth.json`，切回时优先恢复该快照
+- 切到 `proxy` 时，`~/.codex/auth.json` 会被重写为仅含 `OPENAI_API_KEY`
+- 仅含 `display_name` / `description` 的 auth-only provider，会在切离时自动快照当前 `auth.json`，并按 provider 名分别恢复
 - `config.toml` 仍按结构化字段原子改写，不做整份 live snapshot 恢复
 
 ### 切换与探测

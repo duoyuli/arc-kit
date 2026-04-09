@@ -141,7 +141,7 @@ arc provider test --agent claude
 `arc provider use <name>` 只会切换**一个解析后的 provider profile**。若同名 profile 同时存在于多个 agent（例如 `official` 同时存在于 Claude 与 Codex），命令会报歧义并要求显式传 `--agent`。若要按项目对齐 provider，使用 `[provider]` + `arc project apply`。
 
 - **Claude** — profile 中除 `display_name` / `description` 外的字段写入 `~/.claude/settings.json` 的 `env`；切换时清除上一 provider 的变量。
-- **Codex** — 中转站 profile 的 `api_key` 会写入 `~/.codex/auth.json`，`base_url` 会原子写入 `~/.codex/config.toml` 的 `model_provider` / `model_providers`。仅含 `display_name` / `description` 的官方 auth profile 在切离时会自动保存当前 `auth.json` 快照，后续切回时优先恢复该快照。
+- **Codex** — provider 只支持两类：`auth-only`（仅 `display_name` / `description`）与 `proxy`（必须同时提供 `base_url` + `api_key`）。切到 `proxy` 时，`~/.codex/auth.json` 会被重写为仅含 `OPENAI_API_KEY`；切离 `auth-only` 时，当前登录态会按 provider 名保存到 `~/.arc-cli/backups/state/providers/codex/`，后续切回该 provider 时恢复其自己的快照。首次切到尚未登录过的 `auth-only` provider 时，会清空当前 `auth.json`，进入未登录状态。
 - **Backups** — 切换 provider 等写操作前，相关文件会备份到 `~/.arc-cli/backups/<年>/<月>/<日>/`；本地日期早于「今天 − 60 天」的会话目录会在后续备份时清理。
 
 ---

@@ -93,6 +93,15 @@ pub fn provider_backup_files(paths: &ArcPaths, agent: &str) -> Vec<PathBuf> {
         "codex" => {
             files.push(paths.user_home().join(".codex").join("auth.json"));
             files.push(paths.user_home().join(".codex").join("config.toml"));
+            let snapshots_dir = paths.state_dir().join("providers").join("codex");
+            if let Ok(entries) = fs::read_dir(snapshots_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        files.push(path);
+                    }
+                }
+            }
         }
         _ => {}
     }
