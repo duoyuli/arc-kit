@@ -1,22 +1,23 @@
 use std::env;
 use std::io::{self, IsTerminal};
 
-use arc_core::ArcPaths;
-use arc_core::capability::CapabilityTargetState;
+use arc_core::capability::{AppliedScope, CapabilityTargetState, DesiredScope};
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::models::ResourceKind;
+use arc_core::paths::ArcPaths;
 use arc_core::project::{
-    EffectiveConfig, ProjectApplyExecution, ProjectMarketEventStatus, ProjectSkillApplyStatus,
-    execute_project_apply, find_project_config, prepare_project_apply,
+    execute_project_apply, find_project_config, prepare_project_apply, EffectiveConfig,
+    ProjectApplyExecution, ProjectMarketEventStatus, ProjectSkillApplyStatus,
 };
+use arc_core::provider::seed_default_providers;
 use arc_tui::select_agents;
 use console::style;
 
 use crate::cli::{OutputFormat, ProjectApplyArgs};
 use crate::commands::arc_toml_wizard;
 use crate::display::agent_display_name;
-use crate::format::{SCHEMA_VERSION, WriteResult, WriteResultItem, print_json};
+use crate::format::{print_json, WriteResult, WriteResultItem, SCHEMA_VERSION};
 
 pub fn run(
     paths: &ArcPaths,
@@ -26,7 +27,7 @@ pub fn run(
 ) -> Result<(), ArcError> {
     let cwd = env::current_dir()
         .map_err(|e| ArcError::new(format!("failed to get working directory: {e}")))?;
-    arc_core::seed_default_providers(paths, cache);
+    seed_default_providers(paths, cache);
 
     if find_project_config(&cwd).is_none() {
         if *fmt == OutputFormat::Json {
@@ -55,7 +56,9 @@ pub fn run(
         println!();
         println!("  {}", style("Creating arc.toml…").dim());
         println!();
-        arc_toml_wizard::create_arc_toml_interactive(paths, cache, &cwd)?;
+        if !arc_toml_wizard::create_arc_toml_interactive(paths, cache, &cwd)? {
+            return Ok(());
+        }
     }
 
     let plan = prepare_project_apply(paths, cache, &cwd)?;
@@ -92,8 +95,7 @@ pub fn run(
     } else {
         resolve_project_install_targets(cache, args, fmt)?
     };
-    let execution =
-        execute_project_apply(paths, cache, &plan, &targets, args.allow_global_fallback)?;
+    let execution = execute_project_apply(paths, cache, &plan, &targets)?;
 
     render_provider_execution(&execution);
     render_skill_results(&execution);
@@ -109,6 +111,7 @@ pub fn run(
             style("Run `arc market add <url>` to add a market source containing this skill.").dim()
         );
     }
+    render_missing_project_capability_refs(&plan.effective);
 
     render_capability_results(&execution);
     render_removed_capabilities(&execution);
@@ -227,9 +230,8 @@ fn apply_json(
     } else {
         resolve_project_install_targets(cache, args, &OutputFormat::Json)?
     };
-    let execution =
-        execute_project_apply(paths, cache, plan, &targets, args.allow_global_fallback)?;
-    let items = execution_to_write_items(&execution);
+    let execution = execute_project_apply(paths, cache, plan, &targets)?;
+    let items = execution_to_write_items(&execution, &plan.effective);
     let ok = !execution.has_issues(&plan.effective) && !items.iter().any(item_has_issue);
 
     print_json(&WriteResult {
@@ -326,6 +328,33 @@ fn render_capability_results(execution: &ProjectApplyExecution) {
     }
 }
 
+fn render_missing_project_capability_refs(effective: &EffectiveConfig) {
+    for name in &effective.missing_mcps_unavailable {
+        println!(
+            "  {} mcp {} not found in merged catalog, skipped.",
+            style("!").yellow(),
+            style(name).bold()
+        );
+        println!(
+            "    {}",
+            style("Add it to the global registry with `arc mcp define` or `arc mcp install`.")
+                .dim()
+        );
+    }
+
+    for name in &effective.missing_subagents_unavailable {
+        println!(
+            "  {} subagent {} not found in merged catalog, skipped.",
+            style("!").yellow(),
+            style(name).bold()
+        );
+        println!(
+            "    {}",
+            style("Add it to the global registry with `arc subagent install`.").dim()
+        );
+    }
+}
+
 fn render_removed_capabilities(execution: &ProjectApplyExecution) {
     for record in &execution.removed_capabilities {
         println!(
@@ -337,7 +366,10 @@ fn render_removed_capabilities(execution: &ProjectApplyExecution) {
     }
 }
 
-fn execution_to_write_items(execution: &ProjectApplyExecution) -> Vec<WriteResultItem> {
+fn execution_to_write_items(
+    execution: &ProjectApplyExecution,
+    effective: &EffectiveConfig,
+) -> Vec<WriteResultItem> {
     let mut items = Vec::new();
 
     if let Some(provider_switch) = &execution.provider_switch {
@@ -429,12 +461,41 @@ fn execution_to_write_items(execution: &ProjectApplyExecution) -> Vec<WriteResul
                     arc_core::agent::AppliedResourceScope::Project => {
                         arc_core::capability::AppliedScope::Project
                     }
-                    arc_core::agent::AppliedResourceScope::Global
-                    | arc_core::agent::AppliedResourceScope::GlobalFallback => {
+                    arc_core::agent::AppliedResourceScope::Global => {
                         arc_core::capability::AppliedScope::Global
                     }
                 }),
                 reason: None,
+            }),
+    );
+
+    items.extend(
+        effective
+            .missing_mcps_unavailable
+            .iter()
+            .map(|name| WriteResultItem {
+                resource_kind: Some("mcp".to_string()),
+                name: name.clone(),
+                agent: String::new(),
+                status: "not_found".to_string(),
+                desired_scope: Some(DesiredScope::Project),
+                applied_scope: Some(AppliedScope::None),
+                reason: Some("not_in_catalog".to_string()),
+            }),
+    );
+
+    items.extend(
+        effective
+            .missing_subagents_unavailable
+            .iter()
+            .map(|name| WriteResultItem {
+                resource_kind: Some("subagent".to_string()),
+                name: name.clone(),
+                agent: String::new(),
+                status: "not_found".to_string(),
+                desired_scope: Some(DesiredScope::Project),
+                applied_scope: Some(AppliedScope::None),
+                reason: Some("not_in_catalog".to_string()),
             }),
     );
 

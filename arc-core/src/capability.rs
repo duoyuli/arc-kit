@@ -48,12 +48,6 @@ pub enum McpTransportType {
     StreamableHttp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScopeFallback {
-    Global,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceScope {
@@ -95,7 +89,7 @@ impl AppliedScope {
     pub fn from_tracking(scope: AppliedResourceScope) -> Self {
         match scope {
             AppliedResourceScope::Project => Self::Project,
-            AppliedResourceScope::Global | AppliedResourceScope::GlobalFallback => Self::Global,
+            AppliedResourceScope::Global => Self::Global,
         }
     }
 }
@@ -141,8 +135,6 @@ pub struct McpDefinition {
     pub oauth: Option<McpOAuthConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope_fallback: Option<ScopeFallback>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,7 +212,8 @@ pub struct McpApplyPlan {
 #[derive(Debug, Clone)]
 pub struct SubagentApplyPlan {
     pub definition: SubagentDefinition,
-    pub prompt_path: PathBuf,
+    pub prompt_path: Option<PathBuf>,
+    pub prompt_body: Option<String>,
     pub source_scope: SourceScope,
 }
 
@@ -236,13 +229,7 @@ pub fn tracking_record_for_target(
     }
     let applied_scope = match target.applied_scope {
         AppliedScope::Project => AppliedResourceScope::Project,
-        AppliedScope::Global => {
-            if source_scope == SourceScope::Project {
-                AppliedResourceScope::GlobalFallback
-            } else {
-                AppliedResourceScope::Global
-            }
-        }
+        AppliedScope::Global => AppliedResourceScope::Global,
         AppliedScope::None => return None,
     };
     Some(TrackedCapabilityInstall {
@@ -278,18 +265,10 @@ pub fn capability_install_present(
     }
 }
 
-pub fn validate_mcp_definition(
-    definition: &mut McpDefinition,
-    source_scope: SourceScope,
-) -> Result<()> {
+pub fn validate_mcp_definition(definition: &mut McpDefinition) -> Result<()> {
     normalize_targets(&mut definition.targets);
     validate_resource_name(&definition.name, "mcp")?;
     validate_declared_targets(definition.targets.as_ref(), &ResourceKind::Mcp)?;
-    if source_scope == SourceScope::Global && definition.scope_fallback.is_some() {
-        return Err(ArcError::new(
-            "scope_fallback is only allowed on project mcps",
-        ));
-    }
     match definition.transport {
         McpTransportType::Stdio => {
             if definition.command.as_deref().unwrap_or("").is_empty() {
@@ -377,7 +356,7 @@ pub fn load_global_mcps(paths: &ArcPaths) -> Result<Vec<McpDefinition>> {
 
 pub fn save_global_mcp(paths: &ArcPaths, definition: &McpDefinition) -> Result<()> {
     let mut normalized = definition.clone();
-    validate_mcp_definition(&mut normalized, SourceScope::Global)?;
+    validate_mcp_definition(&mut normalized)?;
     mcp_registry::upsert_user_registry_mcp(paths, &normalized)
 }
 
@@ -495,23 +474,12 @@ pub fn apply_mcp_plan(
     cache: &DetectCache,
     plan: &McpApplyPlan,
     project_root: Option<&Path>,
-    allow_global_fallback: bool,
 ) -> Result<Vec<CapabilityTargetStatus>> {
-    let tracked = list_tracked_capability_installs(paths);
     let targets = resolve_declared_targets(cache, plan.definition.targets.as_ref());
     let mut statuses = Vec::new();
 
     for agent in targets {
-        let status = evaluate_mcp_target(
-            paths,
-            cache,
-            &tracked,
-            &agent,
-            plan,
-            project_root,
-            allow_global_fallback,
-            true,
-        )?;
+        let status = evaluate_mcp_target(paths, cache, &agent, plan, project_root, true)?;
         if let Some(tracking) = tracking_record_for_target(
             ResourceKind::Mcp,
             &plan.definition.name,
@@ -534,12 +502,7 @@ pub fn apply_subagent_plan(
     project_root: Option<&Path>,
 ) -> Result<Vec<CapabilityTargetStatus>> {
     let targets = resolve_declared_targets(cache, plan.definition.targets.as_ref());
-    let prompt_body = fs::read_to_string(&plan.prompt_path).map_err(|e| {
-        ArcError::new(format!(
-            "failed to read subagent prompt {}: {e}",
-            plan.prompt_path.display()
-        ))
-    })?;
+    let prompt_body = load_subagent_prompt_body(plan)?;
     let mut statuses = Vec::new();
 
     for agent in targets {
@@ -563,26 +526,13 @@ pub fn apply_subagent_plan(
 pub fn preview_mcp_plan(
     paths: &ArcPaths,
     cache: &DetectCache,
-    tracked: &[TrackedCapabilityInstall],
     plan: &McpApplyPlan,
     project_root: Option<&Path>,
-    allow_global_fallback: bool,
 ) -> Result<Vec<CapabilityTargetStatus>> {
     let targets = resolve_declared_targets(cache, plan.definition.targets.as_ref());
     targets
         .into_iter()
-        .map(|agent| {
-            evaluate_mcp_target(
-                paths,
-                cache,
-                tracked,
-                &agent,
-                plan,
-                project_root,
-                allow_global_fallback,
-                false,
-            )
-        })
+        .map(|agent| evaluate_mcp_target(paths, cache, &agent, plan, project_root, false))
         .collect()
 }
 
@@ -593,12 +543,7 @@ pub fn preview_subagent_plan(
     project_root: Option<&Path>,
 ) -> Result<Vec<CapabilityTargetStatus>> {
     let targets = resolve_declared_targets(cache, plan.definition.targets.as_ref());
-    let prompt_body = fs::read_to_string(&plan.prompt_path).map_err(|e| {
-        ArcError::new(format!(
-            "failed to read subagent prompt {}: {e}",
-            plan.prompt_path.display()
-        ))
-    })?;
+    let prompt_body = load_subagent_prompt_body(plan)?;
     targets
         .into_iter()
         .map(|agent| {
@@ -613,6 +558,23 @@ pub fn preview_subagent_plan(
             )
         })
         .collect()
+}
+
+fn load_subagent_prompt_body(plan: &SubagentApplyPlan) -> Result<String> {
+    if let Some(prompt_body) = &plan.prompt_body {
+        return Ok(prompt_body.clone());
+    }
+
+    let prompt_path = plan
+        .prompt_path
+        .as_ref()
+        .ok_or_else(|| ArcError::new("subagent prompt source missing"))?;
+    fs::read_to_string(prompt_path).map_err(|e| {
+        ArcError::new(format!(
+            "failed to read subagent prompt {}: {e}",
+            prompt_path.display()
+        ))
+    })
 }
 
 pub fn remove_tracked_capability(
@@ -654,15 +616,12 @@ pub fn is_shadowed(name: &str, project_names: &BTreeSet<String>) -> bool {
     project_names.contains(name)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn evaluate_mcp_target(
     paths: &ArcPaths,
     cache: &DetectCache,
-    tracked: &[TrackedCapabilityInstall],
     agent: &str,
     plan: &McpApplyPlan,
     project_root: Option<&Path>,
-    allow_global_fallback: bool,
     perform_write: bool,
 ) -> Result<CapabilityTargetStatus> {
     let Some(agent_info) = cache.get_agent(agent) else {
@@ -727,33 +686,13 @@ fn evaluate_mcp_target(
                 (DesiredScope::Project, AppliedResourceScope::Project)
             }
             McpScopeSupport::GlobalOnly => {
-                if allow_global_fallback
-                    || plan.definition.scope_fallback == Some(ScopeFallback::Global)
-                {
-                    if tracked.iter().any(|record| {
-                        record.kind == ResourceKind::Mcp
-                            && record.name == plan.definition.name
-                            && record.agent == agent
-                            && record.source_scope == SourceScope::Global
-                    }) {
-                        return Ok(CapabilityTargetStatus {
-                            agent: agent.to_string(),
-                            status: CapabilityTargetState::Failed,
-                            desired_scope: DesiredScope::Global,
-                            applied_scope: AppliedScope::None,
-                            reason: Some("name_conflict_with_global".to_string()),
-                        });
-                    }
-                    (DesiredScope::Global, AppliedResourceScope::GlobalFallback)
-                } else {
-                    return Ok(CapabilityTargetStatus {
-                        agent: agent.to_string(),
-                        status: CapabilityTargetState::Skipped,
-                        desired_scope: DesiredScope::Project,
-                        applied_scope: AppliedScope::None,
-                        reason: Some("requires_global_fallback".to_string()),
-                    });
-                }
+                return Ok(CapabilityTargetStatus {
+                    agent: agent.to_string(),
+                    status: CapabilityTargetState::Skipped,
+                    desired_scope: DesiredScope::Project,
+                    applied_scope: AppliedScope::None,
+                    reason: Some("global_only_agent".to_string()),
+                });
             }
             McpScopeSupport::Unsupported => {
                 return Ok(CapabilityTargetStatus {
@@ -1884,10 +1823,9 @@ mod tests {
             exclude_tools: Vec::new(),
             oauth: None,
             description: None,
-            scope_fallback: None,
         };
 
-        assert!(validate_mcp_definition(&mut definition, SourceScope::Global).is_ok());
+        assert!(validate_mcp_definition(&mut definition).is_ok());
     }
 
     #[test]
@@ -1916,10 +1854,9 @@ mod tests {
             exclude_tools: Vec::new(),
             oauth: None,
             description: None,
-            scope_fallback: None,
         };
 
-        assert!(validate_mcp_definition(&mut definition, SourceScope::Global).is_err());
+        assert!(validate_mcp_definition(&mut definition).is_err());
     }
 
     #[test]
@@ -1953,10 +1890,9 @@ mod tests {
                 exclude_tools: Vec::new(),
                 oauth: None,
                 description: None,
-                scope_fallback: None,
-            };
+                };
             assert!(
-                validate_mcp_definition(&mut definition, SourceScope::Global).is_ok(),
+                validate_mcp_definition(&mut definition).is_ok(),
                 "{value} should be accepted"
             );
         }
@@ -1992,7 +1928,6 @@ mod tests {
             exclude_tools: vec!["delete".to_string()],
             oauth: None,
             description: None,
-            scope_fallback: None,
         };
         let value = toml_codex_mcp_value(&definition).unwrap();
         let table = value.as_table().unwrap();
@@ -2035,7 +1970,6 @@ mod tests {
             exclude_tools: Vec::new(),
             oauth: None,
             description: None,
-            scope_fallback: None,
         };
         let value = gemini_mcp_value(&definition);
         assert_eq!(value["httpUrl"], "https://example.com/mcp");
@@ -2065,7 +1999,6 @@ mod tests {
             exclude_tools: Vec::new(),
             oauth: None,
             description: None,
-            scope_fallback: None,
         };
         let value = kimi_mcp_value(&definition);
         assert_eq!(value["transport"], "http");

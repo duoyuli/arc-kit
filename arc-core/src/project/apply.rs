@@ -1,24 +1,25 @@
 use std::path::Path;
 
-use crate::ArcPaths;
-use crate::InstallEngine;
 use crate::capability::{
-    CapabilityTargetState, CapabilityTargetStatus, McpApplyPlan, SourceScope, SubagentApplyPlan,
-    TrackedCapabilityInstall, apply_mcp_plan, apply_subagent_plan,
-    list_tracked_capability_installs, remove_tracked_capability, tracking_record_for_target,
-    validate_mcp_definition, validate_subagent_definition, validate_subagent_targets,
+    apply_mcp_plan, apply_subagent_plan, list_tracked_capability_installs,
+    remove_tracked_capability, tracking_record_for_target, validate_mcp_definition,
+    validate_subagent_targets, CapabilityTargetState, CapabilityTargetStatus, McpApplyPlan,
+    SourceScope, SubagentApplyPlan, TrackedCapabilityInstall,
 };
 use crate::detect::DetectCache;
+use crate::engine::InstallEngine;
 use crate::error::{ArcError, Result};
 use crate::market::bootstrap::sync_market_source_resources;
 use crate::market::sources::MarketSourceRegistry;
 use crate::models::ResourceKind;
+use crate::paths::ArcPaths;
 use crate::provider::{apply_provider, load_providers_for_agent, supported_provider_agents};
 use crate::skill::SkillRegistry;
 
 use super::{
-    EffectiveConfig, ProjectConfig, find_project_config, load_project_config,
-    resolve_effective_config,
+    find_project_config, load_project_config, resolve_effective_config,
+    resolve_project_capability_requirements, EffectiveConfig, ProjectCapabilityRequirements,
+    ProjectConfig,
 };
 
 #[derive(Debug, Clone)]
@@ -27,6 +28,7 @@ pub struct ProjectApplyPlan {
     pub effective: EffectiveConfig,
     pub provider_to_switch: Option<String>,
     pub market_events: Vec<ProjectMarketEvent>,
+    pub capability_requirements: ProjectCapabilityRequirements,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +102,12 @@ pub fn prepare_project_apply(
 
     let effective = resolve_effective_config(paths, cwd, cache, &registry)
         .map_err(|err| err.with_exit_code(1))?;
+    let capability_requirements = project_config
+        .as_ref()
+        .map(|cfg| resolve_project_capability_requirements(paths, cfg))
+        .transpose()
+        .map_err(|err| err.with_exit_code(1))?
+        .unwrap_or_default();
     let provider_to_switch = effective
         .provider_to_switch(paths)
         .map_err(|err| err.with_exit_code(1))?
@@ -110,6 +118,7 @@ pub fn prepare_project_apply(
         effective,
         provider_to_switch,
         market_events,
+        capability_requirements,
     })
 }
 
@@ -118,7 +127,6 @@ pub fn execute_project_apply(
     cache: &DetectCache,
     plan: &ProjectApplyPlan,
     skill_targets: &[String],
-    allow_global_fallback: bool,
 ) -> Result<ProjectApplyExecution> {
     let provider_switch = match plan.provider_to_switch.as_deref() {
         Some(provider_name) => Some(apply_provider_switch(paths, provider_name)?),
@@ -141,11 +149,11 @@ pub fn execute_project_apply(
         )?
     };
 
-    let (capability_results, removed_capabilities) = if let Some(cfg) = &plan.project_config {
+    let (capability_results, removed_capabilities) = if plan.project_config.is_some() {
         let project_root = plan.effective.project_root.as_ref().ok_or_else(|| {
             ArcError::new("internal error: arc.toml present but project root missing")
         })?;
-        apply_project_capabilities(paths, cache, cfg, project_root, allow_global_fallback)?
+        apply_project_capabilities(paths, cache, &plan.capability_requirements, project_root)?
     } else {
         (Vec::new(), Vec::new())
     };
@@ -274,18 +282,17 @@ fn apply_project_skills(
 fn apply_project_capabilities(
     paths: &ArcPaths,
     cache: &DetectCache,
-    cfg: &ProjectConfig,
+    requirements: &ProjectCapabilityRequirements,
     project_root: &Path,
-    allow_global_fallback: bool,
 ) -> Result<(
     Vec<ProjectCapabilityApplyItem>,
     Vec<TrackedCapabilityInstall>,
 )> {
     let mut items = Vec::new();
 
-    for definition in &cfg.mcps {
+    for definition in &requirements.mcps {
         let mut definition = definition.clone();
-        validate_mcp_definition(&mut definition, SourceScope::Project)?;
+        validate_mcp_definition(&mut definition)?;
         let statuses = apply_mcp_plan(
             paths,
             cache,
@@ -294,7 +301,6 @@ fn apply_project_capabilities(
                 source_scope: SourceScope::Project,
             },
             Some(project_root),
-            allow_global_fallback,
         )?;
         items.extend(
             statuses
@@ -307,17 +313,17 @@ fn apply_project_capabilities(
         );
     }
 
-    for definition in &cfg.subagents {
-        let mut definition = definition.clone();
-        let prompt_path =
-            validate_subagent_definition(&mut definition, SourceScope::Project, project_root)?;
+    for entry in &requirements.subagents {
+        let definition = entry.definition.clone();
+        let prompt_body = entry.prompt_body.clone();
         let _ = validate_subagent_targets(cache, &definition)?;
         let statuses = apply_subagent_plan(
             paths,
             cache,
             &SubagentApplyPlan {
                 definition: definition.clone(),
-                prompt_path,
+                prompt_path: None,
+                prompt_body: Some(prompt_body),
                 source_scope: SourceScope::Project,
             },
             Some(project_root),
@@ -333,13 +339,8 @@ fn apply_project_capabilities(
         );
     }
 
-    let removed_capabilities = cleanup_removed_project_capabilities(
-        paths,
-        cache,
-        cfg,
-        project_root,
-        allow_global_fallback,
-    )?;
+    let removed_capabilities =
+        cleanup_removed_project_capabilities(paths, cache, requirements, project_root)?;
 
     Ok((items, removed_capabilities))
 }
@@ -347,12 +348,11 @@ fn apply_project_capabilities(
 fn cleanup_removed_project_capabilities(
     paths: &ArcPaths,
     cache: &DetectCache,
-    cfg: &ProjectConfig,
+    requirements: &ProjectCapabilityRequirements,
     project_root: &Path,
-    allow_global_fallback: bool,
 ) -> Result<Vec<TrackedCapabilityInstall>> {
     let desired_records =
-        desired_project_capability_records(paths, cache, cfg, project_root, allow_global_fallback)?;
+        desired_project_capability_records(paths, cache, requirements, project_root)?;
     let tracked = list_tracked_capability_installs(paths);
     let mut removed_items = Vec::new();
     for record in tracked.into_iter().filter(|record| {
@@ -370,26 +370,22 @@ fn cleanup_removed_project_capabilities(
 fn desired_project_capability_records(
     paths: &ArcPaths,
     cache: &DetectCache,
-    cfg: &ProjectConfig,
+    requirements: &ProjectCapabilityRequirements,
     project_root: &Path,
-    allow_global_fallback: bool,
 ) -> Result<Vec<TrackedCapabilityInstall>> {
-    let tracked = list_tracked_capability_installs(paths);
     let mut desired = Vec::new();
 
-    for definition in &cfg.mcps {
+    for definition in &requirements.mcps {
         let mut definition = definition.clone();
-        validate_mcp_definition(&mut definition, SourceScope::Project)?;
+        validate_mcp_definition(&mut definition)?;
         let statuses = crate::capability::preview_mcp_plan(
             paths,
             cache,
-            &tracked,
             &McpApplyPlan {
                 definition: definition.clone(),
                 source_scope: SourceScope::Project,
             },
             Some(project_root),
-            allow_global_fallback,
         )?;
         desired.extend(statuses.into_iter().filter_map(|status| {
             tracking_record_for_target(
@@ -402,17 +398,16 @@ fn desired_project_capability_records(
         }));
     }
 
-    for definition in &cfg.subagents {
-        let mut definition = definition.clone();
-        let prompt_path =
-            validate_subagent_definition(&mut definition, SourceScope::Project, project_root)?;
+    for entry in &requirements.subagents {
+        let definition = entry.definition.clone();
         let _ = validate_subagent_targets(cache, &definition)?;
         let statuses = crate::capability::preview_subagent_plan(
             paths,
             cache,
             &SubagentApplyPlan {
                 definition: definition.clone(),
-                prompt_path,
+                prompt_path: None,
+                prompt_body: Some(entry.prompt_body.clone()),
                 source_scope: SourceScope::Project,
             },
             Some(project_root),
@@ -434,6 +429,8 @@ fn desired_project_capability_records(
 impl ProjectApplyExecution {
     pub fn has_issues(&self, effective: &EffectiveConfig) -> bool {
         !effective.missing_unavailable.is_empty()
+            || !effective.missing_mcps_unavailable.is_empty()
+            || !effective.missing_subagents_unavailable.is_empty()
             || self.skill_results.iter().any(|item| {
                 matches!(
                     item.status,

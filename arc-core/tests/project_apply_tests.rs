@@ -3,7 +3,7 @@ use std::fs;
 
 use arc_core::detect::{AgentInfo, DetectCache};
 use arc_core::paths::ArcPaths;
-use arc_core::project::{ProjectSkillApplyStatus, execute_project_apply, prepare_project_apply};
+use arc_core::project::{execute_project_apply, prepare_project_apply, ProjectSkillApplyStatus};
 
 fn cache_with_claude(home: &std::path::Path) -> DetectCache {
     let agents = BTreeMap::from([(
@@ -44,8 +44,7 @@ fn project_apply_service_installs_missing_project_skill() {
         vec!["demo-skill".to_string()]
     );
 
-    let execution =
-        execute_project_apply(&paths, &cache, &plan, &["claude".to_string()], false).unwrap();
+    let execution = execute_project_apply(&paths, &cache, &plan, &["claude".to_string()]).unwrap();
 
     assert_eq!(execution.skill_results.len(), 1);
     match &execution.skill_results[0].status {

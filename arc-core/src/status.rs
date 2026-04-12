@@ -3,14 +3,13 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::agent::{McpScopeSupport, SubagentSupport, agent_spec, project_skill_path};
+use crate::agent::{agent_spec, project_skill_path, McpScopeSupport, SubagentSupport};
 use crate::capability::{
-    AppliedScope, CapabilityStatusEntry, CapabilityTargetState, CapabilityTargetStatus,
-    DesiredScope, McpApplyPlan, ResourceResolution, SourceScope, SubagentApplyPlan,
-    TrackedCapabilityInstall, capability_install_present, list_tracked_capability_installs,
-    load_global_subagents, preview_mcp_plan, preview_subagent_plan, resolve_declared_targets,
-    tracking_record_for_target, validate_mcp_definition, validate_subagent_definition,
-    validate_subagent_targets,
+    capability_install_present, load_global_subagents, preview_mcp_plan, preview_subagent_plan,
+    resolve_declared_targets, tracking_record_for_target, validate_mcp_definition,
+    validate_subagent_targets, AppliedScope, CapabilityStatusEntry, CapabilityTargetState,
+    CapabilityTargetStatus, DesiredScope, McpApplyPlan, ResourceResolution, SourceScope,
+    SubagentApplyPlan,
 };
 use crate::detect::DetectCache;
 use crate::engine::{InstallEngine, InstalledResource};
@@ -18,7 +17,9 @@ use crate::market::sources::MarketSourceRegistry;
 use crate::mcp_registry::load_user_registry_mcps;
 use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
-use crate::project::{find_project_config, load_project_config};
+use crate::project::{
+    find_project_config, load_project_config, resolve_project_capability_requirements,
+};
 use crate::provider::{load_providers_for_agent, read_active_provider, supports_provider_agent};
 use crate::skill::SkillRegistry;
 
@@ -173,8 +174,7 @@ pub fn collect_status(paths: &ArcPaths, cwd: &Path, cache: &DetectCache) -> Stat
     let agents = collect_agents(paths, cache, &skill_counts);
     let catalog = collect_catalog(paths, installed.len());
     let project = collect_project(paths, cwd, cache, &agents);
-    let tracked_capabilities = list_tracked_capability_installs(paths);
-    let (mcps, subagents) = collect_capabilities(paths, cwd, cache, &tracked_capabilities);
+    let (mcps, subagents) = collect_capabilities(paths, cwd, cache);
     let actions = collect_actions(&project, &agents, &mcps, &subagents);
 
     StatusSnapshot {
@@ -503,7 +503,6 @@ fn collect_capabilities(
     paths: &ArcPaths,
     cwd: &Path,
     cache: &DetectCache,
-    tracked: &[TrackedCapabilityInstall],
 ) -> (Vec<CapabilityStatusEntry>, Vec<CapabilityStatusEntry>) {
     let project_config =
         find_project_config(cwd).and_then(|path| match load_project_config(&path) {
@@ -513,9 +512,7 @@ fn collect_capabilities(
 
     let project_mcp_entries = project_config
         .as_ref()
-        .map(|(project_root, cfg)| {
-            collect_project_mcp_entries(paths, cache, tracked, project_root, cfg)
-        })
+        .map(|(project_root, cfg)| collect_project_mcp_entries(paths, cache, project_root, cfg))
         .unwrap_or_default();
     let project_subagent_entries = project_config
         .as_ref()
@@ -538,7 +535,7 @@ fn collect_capabilities(
                     &definition.name,
                     SourceScope::Global,
                     None,
-                    preview_mcp_plan(paths, cache, tracked, &plan, None, false).unwrap_or_default(),
+                    preview_mcp_plan(paths, cache, &plan, None).unwrap_or_default(),
                 );
                 mcps.push(CapabilityStatusEntry {
                     name: definition.name.clone(),
@@ -572,7 +569,8 @@ fn collect_capabilities(
         Ok(global_subagents) => {
             for definition in global_subagents {
                 let plan = SubagentApplyPlan {
-                    prompt_path: PathBuf::from(&definition.prompt_file),
+                    prompt_path: Some(PathBuf::from(&definition.prompt_file)),
+                    prompt_body: None,
                     definition: definition.clone(),
                     source_scope: SourceScope::Global,
                 };
@@ -665,35 +663,45 @@ fn invalid_capability_targets(
 fn collect_project_mcp_entries(
     paths: &ArcPaths,
     cache: &DetectCache,
-    tracked: &[TrackedCapabilityInstall],
     project_root: &Path,
     cfg: &crate::project::ProjectConfig,
 ) -> Vec<CapabilityStatusEntry> {
+    let requirements = match resolve_project_capability_requirements(paths, cfg) {
+        Ok(requirements) => requirements,
+        Err(err) => {
+            return cfg
+                .mcps
+                .require
+                .iter()
+                .map(|name| {
+                    invalid_project_capability_entry(
+                        ResourceKind::Mcp,
+                        name,
+                        DesiredScope::Project,
+                        err.message.clone(),
+                    )
+                })
+                .collect();
+        }
+    };
     let mut entries = Vec::new();
-    for definition in &cfg.mcps {
+    for definition in &requirements.mcps {
         let mut definition = definition.clone();
-        let targets = match validate_mcp_definition(&mut definition, SourceScope::Project) {
+        let targets = match validate_mcp_definition(&mut definition) {
             Ok(()) => {
                 let plan = McpApplyPlan {
                     definition: definition.clone(),
                     source_scope: SourceScope::Project,
                 };
-                let preview = preview_mcp_plan(
-                    paths,
-                    cache,
-                    tracked,
-                    &plan,
-                    Some(project_root),
-                    tracked_has_global_fallback(tracked, project_root, &definition.name),
-                )
-                .unwrap_or_else(|err| {
-                    invalid_capability_targets(
-                        cache,
-                        definition.targets.as_ref(),
-                        DesiredScope::Project,
-                        err.message,
-                    )
-                });
+                let preview = preview_mcp_plan(paths, cache, &plan, Some(project_root))
+                    .unwrap_or_else(|err| {
+                        invalid_capability_targets(
+                            cache,
+                            definition.targets.as_ref(),
+                            DesiredScope::Project,
+                            err.message,
+                        )
+                    });
                 observe_capability_targets(
                     paths,
                     ResourceKind::Mcp,
@@ -720,6 +728,14 @@ fn collect_project_mcp_entries(
             targets,
         });
     }
+    entries.extend(requirements.unavailable_mcps.into_iter().map(|name| {
+        invalid_project_capability_entry(
+            ResourceKind::Mcp,
+            &name,
+            DesiredScope::Project,
+            "not_in_catalog".to_string(),
+        )
+    }));
     entries
 }
 
@@ -729,52 +745,60 @@ fn collect_project_subagent_entries(
     project_root: &Path,
     cfg: &crate::project::ProjectConfig,
 ) -> Vec<CapabilityStatusEntry> {
-    let mut entries = Vec::new();
-    for definition in &cfg.subagents {
-        let mut definition = definition.clone();
-        let targets =
-            match validate_subagent_definition(&mut definition, SourceScope::Project, project_root)
-            {
-                Ok(prompt_path) => match validate_subagent_targets(cache, &definition) {
-                    Ok(_) => {
-                        let plan = SubagentApplyPlan {
-                            prompt_path,
-                            definition: definition.clone(),
-                            source_scope: SourceScope::Project,
-                        };
-                        let preview =
-                            preview_subagent_plan(paths, cache, &plan, Some(project_root))
-                                .unwrap_or_else(|err| {
-                                    invalid_capability_targets(
-                                        cache,
-                                        definition.targets.as_ref(),
-                                        DesiredScope::Project,
-                                        err.message,
-                                    )
-                                });
-                        observe_capability_targets(
-                            paths,
-                            ResourceKind::SubAgent,
-                            &definition.name,
-                            SourceScope::Project,
-                            Some(project_root),
-                            preview,
-                        )
-                    }
-                    Err(err) => invalid_capability_targets(
-                        cache,
-                        definition.targets.as_ref(),
+    let requirements = match resolve_project_capability_requirements(paths, cfg) {
+        Ok(requirements) => requirements,
+        Err(err) => {
+            return cfg
+                .subagents
+                .require
+                .iter()
+                .map(|name| {
+                    invalid_project_capability_entry(
+                        ResourceKind::SubAgent,
+                        name,
                         DesiredScope::Project,
-                        err.message,
-                    ),
-                },
-                Err(err) => invalid_capability_targets(
-                    cache,
-                    definition.targets.as_ref(),
-                    DesiredScope::Project,
-                    err.message,
-                ),
-            };
+                        err.message.clone(),
+                    )
+                })
+                .collect();
+        }
+    };
+    let mut entries = Vec::new();
+    for entry in &requirements.subagents {
+        let definition = &entry.definition;
+        let targets = match validate_subagent_targets(cache, definition) {
+            Ok(_) => {
+                let plan = SubagentApplyPlan {
+                    prompt_path: None,
+                    prompt_body: Some(entry.prompt_body.clone()),
+                    definition: definition.clone(),
+                    source_scope: SourceScope::Project,
+                };
+                let preview = preview_subagent_plan(paths, cache, &plan, Some(project_root))
+                    .unwrap_or_else(|err| {
+                        invalid_capability_targets(
+                            cache,
+                            definition.targets.as_ref(),
+                            DesiredScope::Project,
+                            err.message,
+                        )
+                    });
+                observe_capability_targets(
+                    paths,
+                    ResourceKind::SubAgent,
+                    &definition.name,
+                    SourceScope::Project,
+                    Some(project_root),
+                    preview,
+                )
+            }
+            Err(err) => invalid_capability_targets(
+                cache,
+                definition.targets.as_ref(),
+                DesiredScope::Project,
+                err.message,
+            ),
+        };
         entries.push(CapabilityStatusEntry {
             name: definition.name.clone(),
             kind: ResourceKind::SubAgent,
@@ -785,21 +809,38 @@ fn collect_project_subagent_entries(
             targets,
         });
     }
+    entries.extend(requirements.unavailable_subagents.into_iter().map(|name| {
+        invalid_project_capability_entry(
+            ResourceKind::SubAgent,
+            &name,
+            DesiredScope::Project,
+            "not_in_catalog".to_string(),
+        )
+    }));
     entries
 }
 
-fn tracked_has_global_fallback(
-    tracked: &[TrackedCapabilityInstall],
-    project_root: &Path,
+fn invalid_project_capability_entry(
+    kind: ResourceKind,
     name: &str,
-) -> bool {
-    tracked.iter().any(|record| {
-        record.kind == ResourceKind::Mcp
-            && record.name == name
-            && record.source_scope == SourceScope::Project
-            && record.applied_scope == crate::agent::AppliedResourceScope::GlobalFallback
-            && record.project_root.as_deref() == Some(project_root)
-    })
+    desired_scope: DesiredScope,
+    reason: String,
+) -> CapabilityStatusEntry {
+    CapabilityStatusEntry {
+        name: name.to_string(),
+        kind,
+        source_scope: SourceScope::Project,
+        managed_by_arc: true,
+        declared_targets: None,
+        resolution: ResourceResolution::Active,
+        targets: vec![CapabilityTargetStatus {
+            agent: "-".to_string(),
+            status: CapabilityTargetState::Failed,
+            desired_scope,
+            applied_scope: AppliedScope::None,
+            reason: Some(reason),
+        }],
+    }
 }
 
 fn observe_capability_targets(
@@ -1103,12 +1144,12 @@ mod tests {
     }
 
     #[test]
-    fn collect_status_marks_project_subagent_with_missing_prompt_as_failed() {
+    fn collect_status_marks_missing_project_subagent_reference_as_failed() {
         let home = tempdir().unwrap();
         let cwd = tempdir().unwrap();
         fs::write(
             cwd.path().join("arc.toml"),
-            "[[subagents]]\nname = \"reviewer\"\ntargets = [\"codex\"]\nprompt_file = \".arc/reviewer.md\"\n",
+            "[subagents]\nrequire = [\"reviewer\"]\n",
         )
         .unwrap();
         let paths = ArcPaths::with_user_home(home.path());
@@ -1117,17 +1158,16 @@ mod tests {
 
         let snapshot = collect_status(&paths, cwd.path(), &cache);
 
-        assert_eq!(snapshot.subagents.len(), 1);
-        assert_eq!(snapshot.subagents[0].targets.len(), 1);
-        assert_eq!(
-            snapshot.subagents[0].targets[0].status,
-            CapabilityTargetState::Failed
-        );
-        assert!(
-            snapshot.subagents[0].targets[0]
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("prompt_file not found"))
-        );
+        let entry = snapshot
+            .subagents
+            .iter()
+            .find(|entry| entry.name == "reviewer" && entry.source_scope == SourceScope::Project)
+            .expect("project subagent entry");
+        assert_eq!(entry.targets.len(), 1);
+        assert_eq!(entry.targets[0].status, CapabilityTargetState::Failed);
+        assert!(entry.targets[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("not_in_catalog")));
     }
 }

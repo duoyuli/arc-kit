@@ -86,18 +86,15 @@ pub struct ProjectApplyArgs {
     /// Install to every detected agent that supports project-local skills (previous default)
     #[arg(long)]
     pub all_agents: bool,
-    /// Allow project MCPs to fall back to global-only agent config paths
-    #[arg(long)]
-    pub allow_global_fallback: bool,
 }
 
 #[derive(Subcommand)]
 pub enum ProjectCommand {
     #[command(
-        about = "Create or update arc.toml from the catalog, switch provider, and install project skills"
+        about = "Create or update arc.toml from the catalog, switch provider, and install project capabilities"
     )]
     Apply(ProjectApplyArgs),
-    #[command(about = "Edit [skills] require in arc.toml (interactive)")]
+    #[command(about = "Edit project skill/MCP/subagent requirements in arc.toml (interactive)")]
     Edit,
 }
 
@@ -151,8 +148,8 @@ pub enum McpCommand {
 
 #[derive(Args)]
 pub struct McpInfoArgs {
-    #[arg(help = "MCP name")]
-    pub name: String,
+    #[arg(help = "MCP name (omit for interactive mode)")]
+    pub name: Option<String>,
     #[arg(long, help = "Print secret env/header values (default: redacted)")]
     pub show_secrets: bool,
 }
@@ -268,8 +265,8 @@ pub struct McpDefineArgs {
 
 #[derive(Args)]
 pub struct McpUninstallArgs {
-    #[arg(help = "MCP name")]
-    pub name: String,
+    #[arg(help = "MCP name (omit for interactive mode)")]
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -293,8 +290,8 @@ pub enum SubagentCommand {
 
 #[derive(Args)]
 pub struct SubagentInfoArgs {
-    #[arg(help = "Subagent name")]
-    pub name: String,
+    #[arg(help = "Subagent name (omit for interactive mode)")]
+    pub name: Option<String>,
 }
 
 #[derive(Args)]
@@ -311,8 +308,8 @@ pub struct SubagentInstallArgs {
 
 #[derive(Args)]
 pub struct SubagentUninstallArgs {
-    #[arg(help = "Subagent name")]
-    pub name: String,
+    #[arg(help = "Subagent name (omit for interactive mode)")]
+    pub name: Option<String>,
 }
 
 #[derive(Args)]

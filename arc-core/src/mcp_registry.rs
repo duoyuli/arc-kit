@@ -2,11 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::capability::{McpDefinition, SourceScope, validate_mcp_definition};
+use crate::capability::{validate_mcp_definition, McpDefinition};
 use crate::error::{ArcError, Result};
 use crate::paths::ArcPaths;
 
@@ -42,7 +41,7 @@ fn load_builtin_presets() -> Result<Vec<McpDefinition>> {
         .map_err(|e| ArcError::new(format!("failed to parse built-in MCP presets: {e}")))?;
     let mut out = Vec::new();
     for mut m in parsed.mcps {
-        validate_mcp_definition(&mut m, SourceScope::Global)?;
+        validate_mcp_definition(&mut m)?;
         out.push(m);
     }
     Ok(out)
@@ -63,7 +62,7 @@ pub fn load_user_registry_mcps(paths: &ArcPaths) -> Result<Vec<McpDefinition>> {
         .map_err(|e| ArcError::new(format!("failed to parse {}: {e}", path.display())))?;
     let mut out = Vec::new();
     for mut m in file.mcps.drain(..) {
-        validate_mcp_definition(&mut m, SourceScope::Global)?;
+        validate_mcp_definition(&mut m)?;
         out.push(m);
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -96,78 +95,6 @@ pub fn merge_mcp_catalog(
         );
     }
     by_name.into_values().collect()
-}
-
-pub fn migrate_legacy_per_file_mcps(paths: &ArcPaths) -> Result<()> {
-    let dir = paths.mcps_dir();
-
-    let mut legacy_files: Vec<std::path::PathBuf> = Vec::new();
-    let Ok(read_dir) = fs::read_dir(&dir) else {
-        return Ok(());
-    };
-    for item in read_dir.flatten() {
-        let path = item.path();
-        if path.file_name().and_then(|n| n.to_str()) == Some(REGISTRY_FILENAME) {
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
-            continue;
-        }
-        legacy_files.push(path);
-    }
-
-    if legacy_files.is_empty() {
-        return Ok(());
-    }
-
-    let mut collected: Vec<McpDefinition> = load_user_registry_mcps(paths)?;
-    let mut existing: std::collections::HashSet<String> =
-        collected.iter().map(|d| d.name.clone()).collect();
-
-    for path in &legacy_files {
-        let body = fs::read_to_string(path)
-            .map_err(|e| ArcError::new(format!("failed to read {}: {e}", path.display())))?;
-        let mut definition: McpDefinition = toml::from_str(&body).map_err(|e| {
-            ArcError::new(format!("failed to parse legacy {}: {e}", path.display()))
-        })?;
-        validate_mcp_definition(&mut definition, SourceScope::Global)?;
-        if !existing.contains(&definition.name) {
-            existing.insert(definition.name.clone());
-            collected.push(definition);
-        }
-    }
-
-    collected.sort_by(|a, b| a.name.cmp(&b.name));
-    save_registry_file(paths, &collected)?;
-
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let backup_dir = dir.join(format!("migration-backup-{stamp}"));
-    fs::create_dir_all(&backup_dir).map_err(|e| {
-        ArcError::new(format!(
-            "failed to create backup dir {}: {e}",
-            backup_dir.display()
-        ))
-    })?;
-
-    for path in legacy_files {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("legacy.toml");
-        let dest = backup_dir.join(name);
-        fs::rename(&path, &dest).map_err(|e| {
-            ArcError::new(format!(
-                "failed to move {} to {}: {e}",
-                path.display(),
-                dest.display()
-            ))
-        })?;
-    }
-
-    Ok(())
 }
 
 fn save_registry_file(paths: &ArcPaths, mcps: &[McpDefinition]) -> Result<()> {
@@ -214,7 +141,6 @@ pub fn builtin_mcp_definitions() -> Result<Vec<McpDefinition>> {
 }
 
 pub fn load_merged_mcp_catalog(paths: &ArcPaths) -> Result<Vec<McpCatalogEntry>> {
-    migrate_legacy_per_file_mcps(paths)?;
     let builtins = load_builtin_presets()?;
     let user = load_user_registry_mcps(paths)?;
     Ok(merge_mcp_catalog(builtins, user))
@@ -228,14 +154,12 @@ mod tests {
     #[test]
     fn builtin_presets_parse() {
         let v = load_builtin_presets().unwrap();
-        assert!(
-            v.iter()
-                .any(|d| d.name == "filesystem" && d.transport == McpTransportType::Stdio)
-        );
-        assert!(
-            v.iter()
-                .any(|d| d.name == "drawio" && d.transport == McpTransportType::Stdio)
-        );
+        assert!(v
+            .iter()
+            .any(|d| d.name == "filesystem" && d.transport == McpTransportType::Stdio));
+        assert!(v
+            .iter()
+            .any(|d| d.name == "drawio" && d.transport == McpTransportType::Stdio));
         assert!(v.iter().any(|d| {
             d.name == "sequential-thinking" && d.transport == McpTransportType::Stdio
         }));
@@ -267,7 +191,6 @@ mod tests {
             exclude_tools: Vec::new(),
             oauth: None,
             description: None,
-            scope_fallback: None,
         }];
         let user = vec![McpDefinition {
             name: "filesystem".to_string(),
@@ -290,7 +213,6 @@ mod tests {
             exclude_tools: Vec::new(),
             oauth: None,
             description: None,
-            scope_fallback: None,
         }];
         let merged = merge_mcp_catalog(builtins, user);
         assert_eq!(merged.len(), 1);

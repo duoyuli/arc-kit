@@ -1,18 +1,20 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IsTerminal};
 
-use arc_core::ArcPaths;
 use arc_core::agent::AppliedResourceScope;
 use arc_core::capability::{
+    apply_mcp_plan, list_tracked_capability_installs, remove_tracked_capability, save_global_mcp,
     CapabilityTargetState, McpApplyPlan, McpDefinition, McpOAuthConfig, McpOAuthSettings,
-    McpTransportType, SourceScope, apply_mcp_plan, list_tracked_capability_installs,
-    remove_tracked_capability, save_global_mcp,
+    McpTransportType, SourceScope, TrackedCapabilityInstall,
 };
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::mcp_registry::{self, McpEntryOrigin};
 use arc_core::models::{CatalogResource, ResourceKind};
-use arc_tui::run_install_wizard;
+use arc_core::paths::ArcPaths;
+use arc_tui::{
+    pick_mcp, run_capability_uninstall_wizard, run_install_wizard, run_mcp_browser, UninstallEntry,
+};
 use console::style;
 
 use crate::cli::{
@@ -20,8 +22,8 @@ use crate::cli::{
     OutputFormat,
 };
 use crate::format::{
-    ErrorOutput, McpInfoOutput, McpItem, McpListOutput, SCHEMA_VERSION, WriteResult,
-    WriteResultItem, print_json,
+    print_json, ErrorOutput, McpInfoOutput, McpItem, McpListOutput, WriteResult, WriteResultItem,
+    SCHEMA_VERSION,
 };
 
 pub fn run(
@@ -70,93 +72,133 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
     let mut sorted = catalog;
     sorted.sort_by(|a, b| a.definition.name.cmp(&b.definition.name));
 
-    for entry in sorted {
-        let mcp = entry.definition;
-        let origin = match entry.origin {
-            McpEntryOrigin::Builtin => style("builtin").magenta(),
-            McpEntryOrigin::User => style("user").green(),
-        };
-        let targets = mcp
-            .targets
-            .as_ref()
-            .map(|targets| targets.join(", "))
-            .unwrap_or_else(|| "all detected agents".to_string());
-        println!(
-            "  {}  {}  {}  {}",
-            style(&mcp.name).bold(),
-            origin,
-            style(transport_label(mcp.transport)).cyan(),
-            style(targets).dim()
-        );
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        render_mcp_list(&sorted);
+        return Ok(());
     }
-    Ok(())
+
+    run_mcp_browser(&sorted, |entry| {
+        render_mcp_detail(entry, true);
+    })
+    .map_err(|err| ArcError::new(format!("interactive browse failed: {err}")))
 }
 
 fn info(paths: &ArcPaths, args: McpInfoArgs, fmt: &OutputFormat) -> Result<(), ArcError> {
     let catalog = mcp_registry::load_merged_mcp_catalog(paths)?;
-    let Some(entry) = catalog.into_iter().find(|e| e.definition.name == args.name) else {
+    let name = match args.name {
+        Some(name) => name,
+        None => {
+            let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+            if *fmt == OutputFormat::Json || !is_tty {
+                return Err(ArcError::with_hint(
+                    "MCP name required in non-interactive mode.".to_string(),
+                    "Usage: arc mcp info <name> [--show-secrets]".to_string(),
+                ));
+            }
+            if catalog.is_empty() {
+                println!("  {}", style("No MCP entries.").yellow());
+                return Ok(());
+            }
+            let Some(name) = pick_mcp(&catalog)
+                .map_err(|err| ArcError::new(format!("interactive info failed: {err}")))?
+            else {
+                return Ok(());
+            };
+            name
+        }
+    };
+    let Some(entry) = catalog.into_iter().find(|e| e.definition.name == name) else {
         if *fmt == OutputFormat::Json {
             return print_json(&ErrorOutput {
                 schema_version: SCHEMA_VERSION,
                 ok: false,
-                error: format!("mcp '{}' not found", args.name),
+                error: format!("mcp '{name}' not found"),
             });
         }
-        return Err(ArcError::new(format!("mcp '{}' not found", args.name)));
+        return Err(ArcError::new(format!("mcp '{name}' not found")));
     };
-    let mcp = entry.definition;
     let redact = !args.show_secrets;
 
     if *fmt == OutputFormat::Json {
         let (env, headers) = if redact {
-            (redact_map(&mcp.env), redact_map(&mcp.headers))
+            (
+                redact_map(&entry.definition.env),
+                redact_map(&entry.definition.headers),
+            )
         } else {
-            (mcp.env.clone(), mcp.headers.clone())
+            (
+                entry.definition.env.clone(),
+                entry.definition.headers.clone(),
+            )
         };
         return print_json(&McpInfoOutput {
             schema_version: SCHEMA_VERSION,
-            name: mcp.name,
-            transport: transport_label(mcp.transport).to_string(),
-            command: mcp.command,
-            args: mcp.args,
-            url: mcp.url,
+            name: entry.definition.name,
+            transport: transport_label(entry.definition.transport).to_string(),
+            command: entry.definition.command,
+            args: entry.definition.args,
+            url: entry.definition.url,
             env,
             headers,
-            description: mcp.description,
-            targets: mcp.targets,
+            description: entry.definition.description,
+            targets: entry.definition.targets,
         });
     }
 
-    println!("  {}", style(&mcp.name).bold());
-    println!(
-        "  origin: {}",
-        match entry.origin {
-            McpEntryOrigin::Builtin => "builtin",
-            McpEntryOrigin::User => "user",
+    render_mcp_detail(&entry, redact);
+    Ok(())
+}
+
+fn render_mcp_list(entries: &[mcp_registry::McpCatalogEntry]) {
+    let name_width = entries
+        .iter()
+        .map(|entry| entry.definition.name.len())
+        .max()
+        .unwrap_or(0);
+    let origin_width = entries
+        .iter()
+        .map(|entry| format!("[{}]", origin_label(&entry.origin)).len())
+        .max()
+        .unwrap_or(0);
+
+    for entry in entries {
+        let origin_label = format!("[{}]", origin_label(&entry.origin));
+        let origin = match entry.origin {
+            McpEntryOrigin::Builtin => style(format!("{origin_label:<origin_width$}")).magenta(),
+            McpEntryOrigin::User => style(format!("{origin_label:<origin_width$}")).green(),
+        };
+        let base = format!("  {:<name_width$}  {}", entry.definition.name, origin);
+        if let Some(targets) = targets_label(entry.definition.targets.as_ref()) {
+            println!("{base}  {}", style(targets).dim());
+        } else {
+            println!("{base}");
         }
-    );
+    }
+}
+
+fn render_mcp_detail(entry: &mcp_registry::McpCatalogEntry, redact: bool) {
+    let mcp = &entry.definition;
+    println!("  {}", style(&mcp.name).bold());
+    println!("  origin: {}", origin_label(&entry.origin));
     println!("  transport: {}", transport_label(mcp.transport));
-    if let Some(command) = mcp.command {
+    if let Some(command) = &mcp.command {
         println!("  command: {}", command);
     }
     if !mcp.args.is_empty() {
         println!("  args: {}", mcp.args.join(" "));
     }
-    if let Some(url) = mcp.url {
+    if let Some(url) = &mcp.url {
         println!("  url: {}", url);
     }
     print_redacted_map("env", &mcp.env, redact);
     print_redacted_map("headers", &mcp.headers, redact);
-    if let Some(description) = mcp.description {
+    if let Some(description) = &mcp.description {
         println!("  description: {}", description);
     }
     println!(
         "  targets: {}",
-        mcp.targets
-            .map(|targets| targets.join(", "))
-            .unwrap_or_else(|| "all detected agents".to_string())
+        targets_label(mcp.targets.as_ref()).unwrap_or_else(|| "all detected agents".to_string())
     );
-    Ok(())
 }
 
 fn redact_map(m: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -175,6 +217,17 @@ fn print_redacted_map(label: &str, m: &BTreeMap<String, String>, redact: bool) {
     } else {
         println!("  {}: {:?}", label, m);
     }
+}
+
+fn origin_label(origin: &McpEntryOrigin) -> &'static str {
+    match origin {
+        McpEntryOrigin::Builtin => "builtin",
+        McpEntryOrigin::User => "user",
+    }
+}
+
+fn targets_label(targets: Option<&Vec<String>>) -> Option<String> {
+    targets.map(|targets| targets.join(", "))
 }
 
 fn install(
@@ -328,7 +381,6 @@ fn define(
             args.oauth_disabled,
         )?,
         description: args.description,
-        scope_fallback: None,
     };
 
     save_global_mcp(paths, &definition)?;
@@ -371,7 +423,6 @@ fn mcp_definition_from_install_tail(
             args.oauth_disabled,
         )?,
         description: args.description.clone(),
-        scope_fallback: None,
     })
 }
 
@@ -429,7 +480,6 @@ fn apply_and_print(
             source_scope: SourceScope::Global,
         },
         None,
-        false,
     )?;
 
     if *fmt == OutputFormat::Json {
@@ -473,25 +523,52 @@ fn apply_and_print(
 }
 
 fn uninstall(paths: &ArcPaths, args: McpUninstallArgs, fmt: &OutputFormat) -> Result<(), ArcError> {
+    let Some(name) = args.name else {
+        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+        if *fmt == OutputFormat::Json || !is_tty {
+            return Err(ArcError::with_hint(
+                "MCP name required in non-interactive mode.".to_string(),
+                "Usage: arc mcp uninstall <name>".to_string(),
+            ));
+        }
+        let catalog = mcp_registry::load_merged_mcp_catalog(paths)?;
+        let tracked = list_tracked_capability_installs(paths);
+        let installed = build_mcp_uninstall_entries(&catalog, &tracked);
+        if installed.is_empty() {
+            println!("  {}", style("No global MCPs installed.").yellow());
+            return Ok(());
+        }
+        let Some(name) = run_capability_uninstall_wizard(&installed)
+            .map_err(|err| ArcError::new(format!("interactive uninstall failed: {err}")))?
+        else {
+            return Ok(());
+        };
+        return uninstall_by_name(paths, &name, fmt);
+    };
+
+    uninstall_by_name(paths, &name, fmt)
+}
+
+fn uninstall_by_name(paths: &ArcPaths, name: &str, fmt: &OutputFormat) -> Result<(), ArcError> {
     let catalog = mcp_registry::load_merged_mcp_catalog(paths)?;
-    if !catalog.iter().any(|e| e.definition.name == args.name) {
+    if !catalog.iter().any(|entry| entry.definition.name == name) {
         if *fmt == OutputFormat::Json {
             return print_json(&ErrorOutput {
                 schema_version: SCHEMA_VERSION,
                 ok: false,
-                error: format!("mcp '{}' not found", args.name),
+                error: format!("mcp '{name}' not found"),
             });
         }
-        return Err(ArcError::new(format!("mcp '{}' not found", args.name)));
+        return Err(ArcError::new(format!("mcp '{name}' not found")));
     }
 
-    let had_user_entry = mcp_registry::remove_user_registry_mcp(paths, &args.name)?;
+    let had_user_entry = mcp_registry::remove_user_registry_mcp(paths, name)?;
 
     let tracked = list_tracked_capability_installs(paths);
     let mut removed = Vec::new();
     for record in tracked.into_iter().filter(|record| {
         record.kind == ResourceKind::Mcp
-            && record.name == args.name
+            && record.name == name
             && record.source_scope == SourceScope::Global
     }) {
         remove_tracked_capability(paths, &record, None)?;
@@ -502,10 +579,7 @@ fn uninstall(paths: &ArcPaths, args: McpUninstallArgs, fmt: &OutputFormat) -> Re
         return print_json(&WriteResult {
             schema_version: SCHEMA_VERSION,
             ok: true,
-            message: format!(
-                "MCP '{}' removed from registry and agent configs.",
-                args.name
-            ),
+            message: format!("MCP '{name}' removed from registry and agent configs."),
             items: removed
                 .into_iter()
                 .map(|record| WriteResultItem {
@@ -518,9 +592,7 @@ fn uninstall(paths: &ArcPaths, args: McpUninstallArgs, fmt: &OutputFormat) -> Re
                         AppliedResourceScope::Project => {
                             arc_core::capability::AppliedScope::Project
                         }
-                        AppliedResourceScope::Global | AppliedResourceScope::GlobalFallback => {
-                            arc_core::capability::AppliedScope::Global
-                        }
+                        AppliedResourceScope::Global => arc_core::capability::AppliedScope::Global,
                     }),
                     reason: None,
                 })
@@ -560,6 +632,54 @@ fn uninstall(paths: &ArcPaths, args: McpUninstallArgs, fmt: &OutputFormat) -> Re
     Ok(())
 }
 
+fn build_mcp_uninstall_entries(
+    catalog: &[mcp_registry::McpCatalogEntry],
+    tracked: &[TrackedCapabilityInstall],
+) -> Vec<UninstallEntry> {
+    let tracked_targets = global_tracked_targets_by_name(tracked, ResourceKind::Mcp);
+
+    catalog
+        .iter()
+        .filter(|entry| {
+            entry.origin == McpEntryOrigin::User
+                || tracked_targets.contains_key(&entry.definition.name)
+        })
+        .map(|entry| UninstallEntry {
+            name: entry.definition.name.clone(),
+            origin: match entry.origin {
+                McpEntryOrigin::Builtin => "built-in".to_string(),
+                McpEntryOrigin::User => "user".to_string(),
+            },
+            installed_targets: tracked_targets
+                .get(&entry.definition.name)
+                .cloned()
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn global_tracked_targets_by_name(
+    tracked: &[TrackedCapabilityInstall],
+    kind: ResourceKind,
+) -> BTreeMap<String, Vec<String>> {
+    let mut by_name: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for record in tracked
+        .iter()
+        .filter(|record| record.kind == kind && record.source_scope == SourceScope::Global)
+    {
+        by_name
+            .entry(record.name.clone())
+            .or_default()
+            .insert(record.agent.clone());
+    }
+
+    by_name
+        .into_iter()
+        .map(|(name, agents)| (name, agents.into_iter().collect()))
+        .collect()
+}
+
 fn parse_kv_pairs(items: Vec<String>) -> Result<BTreeMap<String, String>, ArcError> {
     let mut out = BTreeMap::new();
     for item in items {
@@ -584,5 +704,97 @@ fn transport_label(transport: McpTransportType) -> &'static str {
         McpTransportType::Stdio => "stdio",
         McpTransportType::Sse => "sse",
         McpTransportType::StreamableHttp => "streamable_http",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mcp_definition(name: &str) -> McpDefinition {
+        McpDefinition {
+            name: name.to_string(),
+            targets: None,
+            transport: McpTransportType::Stdio,
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "@demo/server".to_string()],
+            env: BTreeMap::new(),
+            cwd: None,
+            env_file: None,
+            url: None,
+            headers: BTreeMap::new(),
+            timeout: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled: Some(true),
+            required: Some(false),
+            trust: Some(false),
+            include_tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            oauth: None,
+            description: None,
+        }
+    }
+
+    fn catalog_entry(name: &str, origin: McpEntryOrigin) -> mcp_registry::McpCatalogEntry {
+        mcp_registry::McpCatalogEntry {
+            definition: mcp_definition(name),
+            origin,
+        }
+    }
+
+    fn tracked_record(
+        name: &str,
+        agent: &str,
+        source_scope: SourceScope,
+    ) -> TrackedCapabilityInstall {
+        TrackedCapabilityInstall {
+            kind: ResourceKind::Mcp,
+            name: name.to_string(),
+            agent: agent.to_string(),
+            source_scope,
+            applied_scope: AppliedResourceScope::Global,
+            project_root: None,
+        }
+    }
+
+    #[test]
+    fn build_mcp_uninstall_entries_keeps_user_and_globally_installed_items() {
+        let catalog = vec![
+            catalog_entry("filesystem", McpEntryOrigin::Builtin),
+            catalog_entry("drawio", McpEntryOrigin::Builtin),
+            catalog_entry("custom", McpEntryOrigin::User),
+        ];
+        let tracked = vec![
+            tracked_record("filesystem", "codex", SourceScope::Global),
+            tracked_record("filesystem", "claude", SourceScope::Global),
+            tracked_record("drawio", "codex", SourceScope::Project),
+        ];
+
+        let entries = build_mcp_uninstall_entries(&catalog, &tracked);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "filesystem");
+        assert_eq!(entries[0].origin, "built-in");
+        assert_eq!(entries[0].installed_targets, vec!["claude", "codex"]);
+        assert_eq!(entries[1].name, "custom");
+        assert_eq!(entries[1].origin, "user");
+        assert!(entries[1].installed_targets.is_empty());
+    }
+
+    #[test]
+    fn global_tracked_targets_by_name_dedupes_agents() {
+        let tracked = vec![
+            tracked_record("filesystem", "codex", SourceScope::Global),
+            tracked_record("filesystem", "codex", SourceScope::Global),
+            tracked_record("filesystem", "claude", SourceScope::Global),
+        ];
+
+        let grouped = global_tracked_targets_by_name(&tracked, ResourceKind::Mcp);
+
+        assert_eq!(
+            grouped.get("filesystem").cloned().unwrap_or_default(),
+            vec!["claude".to_string(), "codex".to_string()]
+        );
     }
 }

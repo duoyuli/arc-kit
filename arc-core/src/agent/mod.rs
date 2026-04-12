@@ -21,9 +21,9 @@ pub enum ProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppliedResourceScope {
+    #[serde(alias = "global_fallback")]
     Global,
     Project,
-    GlobalFallback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,8 +281,6 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
     ]
 });
 
-pub type AgentConfig = AgentSpec;
-
 pub fn agent_specs() -> &'static [AgentSpec] {
     AGENT_SPECS.as_slice()
 }
@@ -341,38 +339,20 @@ pub fn agent_mcp_path(
 ) -> Option<PathBuf> {
     let spec = agent_spec(agent_id)?;
     let parts = match scope {
-        AppliedResourceScope::Global | AppliedResourceScope::GlobalFallback => {
-            spec.mcp_global_config_parts
-        }
+        AppliedResourceScope::Global => spec.mcp_global_config_parts,
         AppliedResourceScope::Project => spec.mcp_project_config_parts,
     };
     if parts.is_empty() {
         return None;
     }
     let mut path = match scope {
-        AppliedResourceScope::Global | AppliedResourceScope::GlobalFallback => {
-            if agent_id == "kimi" {
-                return Some(kimi_global_mcp_path(
-                    std::env::var_os("KIMI_SHARE_DIR").map(PathBuf::from),
-                    paths.user_home(),
-                ));
-            } else {
-                paths.user_home().to_path_buf()
-            }
-        }
+        AppliedResourceScope::Global => paths.user_home().to_path_buf(),
         AppliedResourceScope::Project => project_root?.to_path_buf(),
     };
     for part in parts {
         path = path.join(part);
     }
     Some(path)
-}
-
-fn kimi_global_mcp_path(kimi_share_dir: Option<PathBuf>, user_home: &Path) -> PathBuf {
-    if let Some(dir) = kimi_share_dir {
-        return dir.join("mcp.json");
-    }
-    user_home.join(".kimi").join("mcp.json")
 }
 
 pub fn agent_subagent_dir(
@@ -383,18 +363,14 @@ pub fn agent_subagent_dir(
 ) -> Option<PathBuf> {
     let spec = agent_spec(agent_id)?;
     let parts = match scope {
-        AppliedResourceScope::Global | AppliedResourceScope::GlobalFallback => {
-            spec.subagent_global_dir_parts
-        }
+        AppliedResourceScope::Global => spec.subagent_global_dir_parts,
         AppliedResourceScope::Project => spec.subagent_project_dir_parts,
     };
     if parts.is_empty() {
         return None;
     }
     let mut path = match scope {
-        AppliedResourceScope::Global | AppliedResourceScope::GlobalFallback => {
-            paths.user_home().to_path_buf()
-        }
+        AppliedResourceScope::Global => paths.user_home().to_path_buf(),
         AppliedResourceScope::Project => project_root?.to_path_buf(),
     };
     for part in parts {
@@ -420,23 +396,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(path, project.join("opencode.json"));
-    }
-
-    #[test]
-    fn kimi_global_mcp_path_respects_share_dir() {
-        let temp = tempfile::tempdir().unwrap();
-        let kimi_share = temp.path().join("kimi-share");
-        let path =
-            kimi_global_mcp_path(Some(kimi_share.clone()), temp.path().join("home").as_path());
-        assert_eq!(path, kimi_share.join("mcp.json"));
-    }
-
-    #[test]
-    fn kimi_global_mcp_path_defaults_to_user_home() {
-        let temp = tempfile::tempdir().unwrap();
-        let user_home = temp.path().join("home");
-        let path = kimi_global_mcp_path(None, &user_home);
-        assert_eq!(path, user_home.join(".kimi").join("mcp.json"));
     }
 
     #[test]

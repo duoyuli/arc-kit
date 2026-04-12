@@ -577,20 +577,27 @@ require = []
 }
 
 #[test]
-fn arc_project_apply_skips_global_only_mcp_without_fallback() {
+fn arc_project_apply_skips_global_only_mcp() {
     let temp = tempfile::tempdir().unwrap();
     let proj = tempfile::tempdir().unwrap();
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
     write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
-    fs::write(
-        proj.path().join("arc.toml"),
+    write_global_mcp_registry(
+        temp.path(),
         r#"
 [[mcps]]
 name = "github"
 targets = ["kimi"]
 transport = "streamable_http"
 url = "https://api.github.com/mcp"
+"#,
+    );
+    fs::write(
+        proj.path().join("arc.toml"),
+        r#"
+[mcps]
+require = ["github"]
 "#,
     )
     .unwrap();
@@ -622,143 +629,8 @@ url = "https://api.github.com/mcp"
         .expect("mcp item");
     assert_eq!(item["agent"], "kimi");
     assert_eq!(item["status"], "skipped");
-    assert_eq!(item["reason"], "requires_global_fallback");
+    assert_eq!(item["reason"], "global_only_agent");
     assert!(!temp.path().join(".kimi/mcp.json").exists());
-}
-
-#[test]
-fn arc_project_apply_allows_global_fallback_for_mcp() {
-    let temp = tempfile::tempdir().unwrap();
-    let proj = tempfile::tempdir().unwrap();
-    let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&bin_dir).unwrap();
-    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
-    fs::write(
-        proj.path().join("arc.toml"),
-        r#"
-[[mcps]]
-name = "github"
-targets = ["kimi"]
-transport = "streamable_http"
-url = "https://api.github.com/mcp"
-"#,
-    )
-    .unwrap();
-
-    let output = arc_cmd_with_home(temp.path())
-        .args([
-            "project",
-            "apply",
-            "--format",
-            "json",
-            "--allow-global-fallback",
-        ])
-        .env(
-            "PATH",
-            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
-        )
-        .current_dir(proj.path())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let item = json["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["resource_kind"] == "mcp")
-        .cloned()
-        .expect("mcp item");
-    assert_eq!(item["agent"], "kimi");
-    assert_eq!(item["status"], "applied");
-    assert_eq!(item["applied_scope"], "global");
-
-    let config_path = temp.path().join(".kimi/mcp.json");
-    assert!(config_path.exists());
-    let body = fs::read_to_string(config_path).unwrap();
-    assert!(body.contains("\"mcpServers\""));
-    assert!(body.contains("\"github\""));
-}
-
-#[test]
-fn arc_project_apply_reports_failed_mcp_conflict_in_json() {
-    let temp = tempfile::tempdir().unwrap();
-    let proj = tempfile::tempdir().unwrap();
-    let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&bin_dir).unwrap();
-    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
-
-    let install = arc_cmd_with_home(temp.path())
-        .args([
-            "mcp",
-            "install",
-            "github",
-            "--agent",
-            "kimi",
-            "--transport",
-            "streamable-http",
-            "--url",
-            "https://api.github.com/mcp",
-        ])
-        .env(
-            "PATH",
-            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
-        )
-        .output()
-        .unwrap();
-    assert!(
-        install.status.success(),
-        "{}",
-        String::from_utf8_lossy(&install.stderr)
-    );
-
-    fs::write(
-        proj.path().join("arc.toml"),
-        r#"
-[[mcps]]
-name = "github"
-targets = ["kimi"]
-transport = "streamable_http"
-url = "https://api.github.com/mcp"
-scope_fallback = "global"
-"#,
-    )
-    .unwrap();
-
-    let output = arc_cmd_with_home(temp.path())
-        .args(["project", "apply", "--format", "json"])
-        .env(
-            "PATH",
-            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
-        )
-        .current_dir(proj.path())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json["ok"], false);
-    let item = json["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["resource_kind"] == "mcp")
-        .cloned()
-        .expect("mcp item");
-    assert_eq!(item["agent"], "kimi");
-    assert_eq!(item["status"], "failed");
-    assert_eq!(item["reason"], "name_conflict_with_global");
 }
 
 #[test]
@@ -768,8 +640,8 @@ fn arc_project_apply_writes_opencode_project_mcp_to_opencode_json() {
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
     write_fake_cli(&bin_dir, "opencode", "opencode 1.0.0");
-    fs::write(
-        proj.path().join("arc.toml"),
+    write_global_mcp_registry(
+        temp.path(),
         r#"
 [[mcps]]
 name = "filesystem"
@@ -777,6 +649,13 @@ targets = ["opencode"]
 transport = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem"]
+"#,
+    );
+    fs::write(
+        proj.path().join("arc.toml"),
+        r#"
+[mcps]
+require = ["filesystem"]
 "#,
     )
     .unwrap();
@@ -800,49 +679,6 @@ args = ["-y", "@modelcontextprotocol/server-filesystem"]
 }
 
 #[test]
-fn arc_project_apply_skips_kimi_without_global_fallback() {
-    let temp = tempfile::tempdir().unwrap();
-    let proj = tempfile::tempdir().unwrap();
-    let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&bin_dir).unwrap();
-    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
-    fs::write(
-        proj.path().join("arc.toml"),
-        r#"
-[[mcps]]
-name = "web"
-targets = ["kimi"]
-transport = "streamable_http"
-url = "https://example.com/mcp"
-"#,
-    )
-    .unwrap();
-
-    let output = arc_cmd_with_home(temp.path())
-        .args(["project", "apply", "--format", "json"])
-        .env(
-            "PATH",
-            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
-        )
-        .current_dir(proj.path())
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(&stdout).unwrap();
-    let item = json["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["resource_kind"] == "mcp")
-        .cloned()
-        .expect("mcp item");
-    assert_eq!(item["agent"], "kimi");
-    assert_eq!(item["status"], "skipped");
-    assert_eq!(item["reason"], "requires_global_fallback");
-}
-
-#[test]
 fn arc_project_apply_removes_project_capabilities_from_deselected_agents() {
     let temp = tempfile::tempdir().unwrap();
     let proj = tempfile::tempdir().unwrap();
@@ -850,22 +686,35 @@ fn arc_project_apply_removes_project_capabilities_from_deselected_agents() {
     fs::create_dir_all(&bin_dir).unwrap();
     write_fake_cli(&bin_dir, "codex", "codex-cli 0.116.0");
     write_fake_cli(&bin_dir, "claude", "2.1.84 (Claude Code)");
-
-    fs::write(proj.path().join("reviewer.md"), "# reviewer\n").unwrap();
-    fs::write(
-        proj.path().join("arc.toml"),
+    write_global_mcp_registry(
+        temp.path(),
         r#"
 [[mcps]]
 name = "filesystem"
 targets = ["claude", "codex"]
 transport = "stdio"
 command = "npx"
-
-[[subagents]]
+"#,
+    );
+    write_global_subagent(
+        temp.path(),
+        "reviewer",
+        r#"
 name = "reviewer"
 description = "Repository reviewer"
 targets = ["claude", "codex"]
-prompt_file = "reviewer.md"
+prompt_file = "ignored.md"
+"#,
+        "# reviewer\n",
+    );
+    fs::write(
+        proj.path().join("arc.toml"),
+        r#"
+[mcps]
+require = ["filesystem"]
+
+[subagents]
+require = ["reviewer"]
 "#,
     )
     .unwrap();
@@ -886,17 +735,11 @@ prompt_file = "reviewer.md"
     fs::write(
         proj.path().join("arc.toml"),
         r#"
-[[mcps]]
-name = "filesystem"
-targets = ["claude"]
-transport = "stdio"
-command = "npx"
+[mcps]
+require = []
 
-[[subagents]]
-name = "reviewer"
-description = "Repository reviewer"
-targets = ["claude"]
-prompt_file = "reviewer.md"
+[subagents]
+require = []
 "#,
     )
     .unwrap();
@@ -915,94 +758,38 @@ prompt_file = "reviewer.md"
 
     let codex_config = fs::read_to_string(proj.path().join(".codex").join("config.toml")).unwrap();
     assert!(!codex_config.contains("filesystem"));
-    assert!(
-        !proj
-            .path()
-            .join(".codex")
-            .join("agents")
-            .join("reviewer.toml")
-            .exists()
-    );
-    assert!(
-        proj.path()
-            .join(".claude")
-            .join("agents")
-            .join("reviewer.md")
-            .exists()
-    );
-}
-
-#[test]
-fn arc_status_reflects_existing_project_global_fallback_install() {
-    let temp = tempfile::tempdir().unwrap();
-    let proj = tempfile::tempdir().unwrap();
-    let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&bin_dir).unwrap();
-    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
-
-    fs::write(
-        proj.path().join("arc.toml"),
-        r#"
-[[mcps]]
-name = "github"
-targets = ["kimi"]
-transport = "streamable_http"
-url = "https://api.github.com/mcp"
-"#,
-    )
-    .unwrap();
-
-    let path_env = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap());
-    let apply = arc_cmd_with_home(temp.path())
-        .args([
-            "project",
-            "apply",
-            "--format",
-            "json",
-            "--allow-global-fallback",
-        ])
-        .env("PATH", &path_env)
-        .current_dir(proj.path())
-        .output()
-        .unwrap();
-    assert!(
-        apply.status.success(),
-        "{}",
-        String::from_utf8_lossy(&apply.stderr)
-    );
-
-    let status = arc_cmd_with_home(temp.path())
-        .args(["status", "--format", "json"])
-        .env("PATH", &path_env)
-        .current_dir(proj.path())
-        .output()
-        .unwrap();
-    assert!(
-        status.status.success(),
-        "{}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&status.stdout);
-    let json: Value = serde_json::from_str(&stdout).unwrap();
-    let item = json["mcps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["name"] == "github" && entry["source_scope"] == "project")
-        .cloned()
-        .expect("project mcp entry");
-    let target = item["targets"]
-        .as_array()
-        .unwrap()
-        .first()
-        .cloned()
-        .unwrap();
-    assert_eq!(target["agent"], "kimi");
-    assert_eq!(target["status"], "applied");
-    assert_eq!(target["applied_scope"], "global");
+    assert!(!proj
+        .path()
+        .join(".codex")
+        .join("agents")
+        .join("reviewer.toml")
+        .exists());
+    assert!(!proj
+        .path()
+        .join(".claude")
+        .join("agents")
+        .join("reviewer.md")
+        .exists());
 }
 
 // ── helpers ───────────────────────────────────────────────────
+
+fn write_global_mcp_registry(home: &Path, body: &str) {
+    let dir = home.join(".arc-cli").join("mcps");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("registry.toml"),
+        format!("registry_version = 1\n\n{body}"),
+    )
+    .unwrap();
+}
+
+fn write_global_subagent(home: &Path, name: &str, metadata: &str, prompt_body: &str) {
+    let dir = home.join(".arc-cli").join("subagents");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(format!("{name}.toml")), metadata).unwrap();
+    fs::write(dir.join(format!("{name}.md")), prompt_body).unwrap();
+}
 
 #[cfg(unix)]
 fn write_fake_cli(bin_dir: &Path, name: &str, version_output: &str) {

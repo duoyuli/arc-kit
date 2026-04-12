@@ -1,29 +1,34 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
-use arc_core::ArcPaths;
 use arc_core::agent::AppliedResourceScope;
 use arc_core::capability::{
-    CapabilityTargetState, SourceScope, SubagentApplyPlan, SubagentDefinition, apply_subagent_plan,
-    list_tracked_capability_installs, remove_global_subagent, remove_tracked_capability,
-    save_global_subagent, validate_subagent_targets,
+    apply_subagent_plan, list_tracked_capability_installs, remove_global_subagent,
+    remove_tracked_capability, save_global_subagent, validate_subagent_targets,
+    CapabilityTargetState, SourceScope, SubagentApplyPlan, SubagentDefinition,
+    TrackedCapabilityInstall,
 };
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::models::ResourceKind;
+use arc_core::paths::ArcPaths;
 use arc_core::subagent_registry::{
-    SubagentEntryOrigin, find_global_subagent, load_merged_subagent_catalog,
+    find_global_subagent, load_merged_subagent_catalog, SubagentEntryOrigin,
 };
-use arc_tui::run_subagent_install_wizard;
+use arc_tui::{
+    pick_subagent, run_capability_uninstall_wizard, run_subagent_browser,
+    run_subagent_install_wizard, UninstallEntry,
+};
 use console::style;
 
 use crate::cli::{
     OutputFormat, SubagentCommand, SubagentInfoArgs, SubagentInstallArgs, SubagentUninstallArgs,
 };
 use crate::format::{
-    ErrorOutput, SCHEMA_VERSION, SubagentInfoOutput, SubagentItem, SubagentListOutput, WriteResult,
-    WriteResultItem, print_json,
+    print_json, ErrorOutput, SubagentInfoOutput, SubagentItem, SubagentListOutput, WriteResult,
+    WriteResultItem, SCHEMA_VERSION,
 };
 
 pub fn run(
@@ -66,43 +71,48 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
         return Ok(());
     }
 
-    for item in subagents {
-        let origin = match item.origin {
-            SubagentEntryOrigin::Builtin => "built-in",
-            SubagentEntryOrigin::User => "user",
-        };
-        println!(
-            "  {} {}",
-            style(&item.definition.name).bold(),
-            style(format!("[{origin}]")).dim()
-        );
-        if let Some(description) = item.definition.description {
-            println!("      {}", style(description).dim());
-        }
-        println!(
-            "      {}",
-            style(
-                item.definition
-                    .targets
-                    .map(|targets| targets.join(", "))
-                    .unwrap_or_else(|| "all detected agents".to_string())
-            )
-            .dim()
-        );
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        render_subagent_list(&subagents);
+        return Ok(());
     }
-    Ok(())
+
+    run_subagent_browser(&subagents, render_subagent_detail)
+        .map_err(|err| ArcError::new(format!("interactive browse failed: {err}")))
 }
 
 fn info(paths: &ArcPaths, args: SubagentInfoArgs, fmt: &OutputFormat) -> Result<(), ArcError> {
-    let Some(subagent) = find_global_subagent(paths, &args.name)? else {
+    let name = match args.name {
+        Some(name) => name,
+        None => {
+            let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+            if *fmt == OutputFormat::Json || !is_tty {
+                return Err(ArcError::with_hint(
+                    "Subagent name required in non-interactive mode.".to_string(),
+                    "Usage: arc subagent info <name>".to_string(),
+                ));
+            }
+            let catalog = load_merged_subagent_catalog(paths)?;
+            if catalog.is_empty() {
+                println!("  {}", style("No global subagents available.").yellow());
+                return Ok(());
+            }
+            let Some(name) = pick_subagent(&catalog)
+                .map_err(|err| ArcError::new(format!("interactive info failed: {err}")))?
+            else {
+                return Ok(());
+            };
+            name
+        }
+    };
+    let Some(subagent) = find_global_subagent(paths, &name)? else {
         if *fmt == OutputFormat::Json {
             return print_json(&ErrorOutput {
                 schema_version: SCHEMA_VERSION,
                 ok: false,
-                error: format!("subagent '{}' not found", args.name),
+                error: format!("subagent '{name}' not found"),
             });
         }
-        return Err(ArcError::new(format!("subagent '{}' not found", args.name)));
+        return Err(ArcError::new(format!("subagent '{name}' not found")));
     };
     if *fmt == OutputFormat::Json {
         return print_json(&SubagentInfoOutput {
@@ -115,31 +125,60 @@ fn info(paths: &ArcPaths, args: SubagentInfoArgs, fmt: &OutputFormat) -> Result<
             description: subagent.definition.description,
             targets: subagent.definition.targets,
             prompt_file: subagent.definition.prompt_file,
+            prompt: subagent.prompt_body,
         });
     }
 
+    render_subagent_detail(&subagent);
+    Ok(())
+}
+
+fn render_subagent_list(entries: &[arc_core::subagent_registry::SubagentCatalogEntry]) {
+    for entry in entries {
+        println!(
+            "  {} {}",
+            style(&entry.definition.name).bold(),
+            style(format!("[{}]", origin_label(&entry.origin))).dim()
+        );
+        if let Some(description) = &entry.definition.description {
+            println!("      {}", style(description).dim());
+        }
+        if let Some(targets) = targets_label(entry.definition.targets.as_ref()) {
+            println!("      {}", style(targets).dim());
+        }
+    }
+}
+
+fn render_subagent_detail(entry: &arc_core::subagent_registry::SubagentCatalogEntry) {
     println!(
         "  {} {}",
-        style(&subagent.definition.name).bold(),
-        style(match subagent.origin {
-            SubagentEntryOrigin::Builtin => "[built-in]",
-            SubagentEntryOrigin::User => "[user]",
-        })
-        .dim()
+        style(&entry.definition.name).bold(),
+        style(format!("[{}]", origin_label(&entry.origin))).dim()
     );
-    if let Some(description) = subagent.definition.description {
+    if let Some(description) = &entry.definition.description {
         println!("  description: {}", description);
     }
-    println!("  prompt_file: {}", subagent.definition.prompt_file);
+    println!("  prompt_file: {}", &entry.definition.prompt_file);
     println!(
         "  targets: {}",
-        subagent
-            .definition
-            .targets
-            .map(|targets| targets.join(", "))
+        targets_label(entry.definition.targets.as_ref())
             .unwrap_or_else(|| "all detected agents".to_string())
     );
-    Ok(())
+    println!("  prompt:");
+    for line in entry.prompt_body.lines() {
+        println!("    {line}");
+    }
+}
+
+fn origin_label(origin: &SubagentEntryOrigin) -> &'static str {
+    match origin {
+        SubagentEntryOrigin::Builtin => "built-in",
+        SubagentEntryOrigin::User => "user",
+    }
+}
+
+fn targets_label(targets: Option<&Vec<String>>) -> Option<String> {
+    targets.map(|targets| targets.join(", "))
 }
 
 fn install(
@@ -161,7 +200,8 @@ fn install(
         cache,
         &SubagentApplyPlan {
             definition: definition.clone(),
-            prompt_path,
+            prompt_path: Some(prompt_path),
+            prompt_body: Some(prompt_body.clone()),
             source_scope: SourceScope::Global,
         },
         None,
@@ -314,12 +354,39 @@ fn uninstall(
     args: SubagentUninstallArgs,
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
-    remove_global_subagent(paths, &args.name)?;
+    let Some(name) = args.name else {
+        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+        if *fmt == OutputFormat::Json || !is_tty {
+            return Err(ArcError::with_hint(
+                "Subagent name required in non-interactive mode.".to_string(),
+                "Usage: arc subagent uninstall <name>".to_string(),
+            ));
+        }
+        let catalog = load_merged_subagent_catalog(paths)?;
+        let tracked = list_tracked_capability_installs(paths);
+        let installed = build_subagent_uninstall_entries(&catalog, &tracked);
+        if installed.is_empty() {
+            println!("  {}", style("No global subagents installed.").yellow());
+            return Ok(());
+        }
+        let Some(name) = run_capability_uninstall_wizard(&installed)
+            .map_err(|err| ArcError::new(format!("interactive uninstall failed: {err}")))?
+        else {
+            return Ok(());
+        };
+        return uninstall_by_name(paths, &name, fmt);
+    };
+
+    uninstall_by_name(paths, &name, fmt)
+}
+
+fn uninstall_by_name(paths: &ArcPaths, name: &str, fmt: &OutputFormat) -> Result<(), ArcError> {
+    remove_global_subagent(paths, name)?;
     let tracked = list_tracked_capability_installs(paths);
     let mut removed = Vec::new();
     for record in tracked.into_iter().filter(|record| {
         record.kind == ResourceKind::SubAgent
-            && record.name == args.name
+            && record.name == name
             && record.source_scope == SourceScope::Global
     }) {
         remove_tracked_capability(paths, &record, None)?;
@@ -330,7 +397,7 @@ fn uninstall(
         return print_json(&WriteResult {
             schema_version: SCHEMA_VERSION,
             ok: true,
-            message: format!("Subagent '{}' removed.", args.name),
+            message: format!("Subagent '{name}' removed."),
             items: removed
                 .into_iter()
                 .map(|record| WriteResultItem {
@@ -343,9 +410,7 @@ fn uninstall(
                         AppliedResourceScope::Project => {
                             arc_core::capability::AppliedScope::Project
                         }
-                        AppliedResourceScope::Global | AppliedResourceScope::GlobalFallback => {
-                            arc_core::capability::AppliedScope::Global
-                        }
+                        AppliedResourceScope::Global => arc_core::capability::AppliedScope::Global,
                     }),
                     reason: None,
                 })
@@ -369,4 +434,128 @@ fn uninstall(
         }
     }
     Ok(())
+}
+
+fn build_subagent_uninstall_entries(
+    catalog: &[arc_core::subagent_registry::SubagentCatalogEntry],
+    tracked: &[TrackedCapabilityInstall],
+) -> Vec<UninstallEntry> {
+    let tracked_targets = global_tracked_targets_by_name(tracked, ResourceKind::SubAgent);
+
+    catalog
+        .iter()
+        .filter(|entry| {
+            entry.origin == SubagentEntryOrigin::User
+                || tracked_targets.contains_key(&entry.definition.name)
+        })
+        .map(|entry| UninstallEntry {
+            name: entry.definition.name.clone(),
+            origin: match entry.origin {
+                SubagentEntryOrigin::Builtin => "built-in".to_string(),
+                SubagentEntryOrigin::User => "user".to_string(),
+            },
+            installed_targets: tracked_targets
+                .get(&entry.definition.name)
+                .cloned()
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn global_tracked_targets_by_name(
+    tracked: &[TrackedCapabilityInstall],
+    kind: ResourceKind,
+) -> BTreeMap<String, Vec<String>> {
+    let mut by_name: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for record in tracked
+        .iter()
+        .filter(|record| record.kind == kind && record.source_scope == SourceScope::Global)
+    {
+        by_name
+            .entry(record.name.clone())
+            .or_default()
+            .insert(record.agent.clone());
+    }
+
+    by_name
+        .into_iter()
+        .map(|(name, agents)| (name, agents.into_iter().collect()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn subagent_entry(
+        name: &str,
+        origin: SubagentEntryOrigin,
+    ) -> arc_core::subagent_registry::SubagentCatalogEntry {
+        arc_core::subagent_registry::SubagentCatalogEntry {
+            definition: SubagentDefinition {
+                name: name.to_string(),
+                description: None,
+                targets: None,
+                prompt_file: format!("/tmp/{name}.md"),
+            },
+            origin,
+            prompt_body: "# prompt".to_string(),
+        }
+    }
+
+    fn tracked_record(
+        name: &str,
+        agent: &str,
+        source_scope: SourceScope,
+    ) -> TrackedCapabilityInstall {
+        TrackedCapabilityInstall {
+            kind: ResourceKind::SubAgent,
+            name: name.to_string(),
+            agent: agent.to_string(),
+            source_scope,
+            applied_scope: AppliedResourceScope::Global,
+            project_root: None,
+        }
+    }
+
+    #[test]
+    fn build_subagent_uninstall_entries_keeps_user_and_globally_installed_items() {
+        let catalog = vec![
+            subagent_entry("arc-backend", SubagentEntryOrigin::Builtin),
+            subagent_entry("reviewer", SubagentEntryOrigin::User),
+            subagent_entry("arc-db", SubagentEntryOrigin::Builtin),
+        ];
+        let tracked = vec![
+            tracked_record("arc-backend", "codex", SourceScope::Global),
+            tracked_record("arc-backend", "claude", SourceScope::Global),
+            tracked_record("arc-db", "codex", SourceScope::Project),
+        ];
+
+        let entries = build_subagent_uninstall_entries(&catalog, &tracked);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "arc-backend");
+        assert_eq!(entries[0].origin, "built-in");
+        assert_eq!(entries[0].installed_targets, vec!["claude", "codex"]);
+        assert_eq!(entries[1].name, "reviewer");
+        assert_eq!(entries[1].origin, "user");
+        assert!(entries[1].installed_targets.is_empty());
+    }
+
+    #[test]
+    fn global_tracked_targets_by_name_dedupes_agents() {
+        let tracked = vec![
+            tracked_record("reviewer", "codex", SourceScope::Global),
+            tracked_record("reviewer", "codex", SourceScope::Global),
+            tracked_record("reviewer", "claude", SourceScope::Global),
+        ];
+
+        let grouped = global_tracked_targets_by_name(&tracked, ResourceKind::SubAgent);
+
+        assert_eq!(
+            grouped.get("reviewer").cloned().unwrap_or_default(),
+            vec!["claude".to_string(), "codex".to_string()]
+        );
+    }
 }
