@@ -261,6 +261,32 @@ fn skill_uninstall_json_requires_name() {
 }
 
 #[test]
+fn mcp_uninstall_json_requires_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["mcp", "uninstall", "--format", "json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("MCP name required"));
+}
+
+#[test]
+fn subagent_uninstall_json_requires_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["subagent", "uninstall", "--format", "json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Subagent name required"));
+}
+
+#[test]
 fn mcp_info_missing_returns_structured_json_error() {
     let temp = tempfile::tempdir().unwrap();
     let output = arc_cmd_with_home(temp.path())
@@ -629,6 +655,46 @@ fn subagent_list_json_marks_builtin_origin() {
     assert_eq!(backend["origin"], "builtin");
 }
 
+#[test]
+fn subagent_info_text_shows_prompt_body() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["subagent", "info", "arc-brainstorm"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("prompt:"));
+    assert!(stdout.contains("# Brainstorm Agent"));
+    assert!(stdout.contains("必须提出 2 到 3 个方案"));
+}
+
+#[test]
+fn subagent_info_json_includes_prompt_body() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["subagent", "info", "arc-brainstorm", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}, output: {stdout}"));
+    assert_eq!(json["name"], "arc-brainstorm");
+    assert!(
+        json["prompt"]
+            .as_str()
+            .unwrap_or("")
+            .contains("# Brainstorm Agent")
+    );
+    assert!(
+        json["prompt"]
+            .as_str()
+            .unwrap_or("")
+            .contains("必须提出 2 到 3 个方案")
+    );
+}
+
 fn run_git(args: &[&str], cwd: &Path) {
     let status = Command::new("git")
         .args(args)
@@ -727,6 +793,21 @@ fn mcp_list_text_omits_description_lines() {
     assert!(stdout.contains("drawio"));
     assert!(!stdout.contains("AI-driven diagram creation"));
     assert!(!stdout.contains("MCP filesystem server via npx"));
+    assert!(!stdout.contains("stdio"));
+    assert!(!stdout.contains("streamable_http"));
+}
+
+#[test]
+fn mcp_info_text_keeps_transport_line() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["mcp", "info", "filesystem"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("origin: builtin"));
+    assert!(stdout.contains("transport: stdio"));
 }
 
 #[test]
@@ -837,6 +918,30 @@ fn mcp_install_no_name_noninteractive_fails() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("MCP name required"));
+}
+
+#[test]
+fn mcp_uninstall_no_name_noninteractive_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["mcp", "uninstall"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("MCP name required"));
+}
+
+#[test]
+fn subagent_uninstall_no_name_noninteractive_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["subagent", "uninstall"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Subagent name required"));
 }
 
 fn write_fake_cli(bin_dir: &Path, name: &str, version_output: &str) {

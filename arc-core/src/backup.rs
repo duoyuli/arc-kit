@@ -4,8 +4,6 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Duration, Local, NaiveDate};
 use log::{info, warn};
-use once_cell::sync::Lazy;
-use regex::Regex;
 
 use crate::paths::ArcPaths;
 
@@ -13,9 +11,6 @@ use crate::paths::ArcPaths;
 const BACKUP_RETENTION_DAYS: i64 = 60;
 /// Depth under `backups/`: year / month / day / session folder.
 const NESTED_SESSION_DEPTH: usize = 4;
-
-static LEGACY_BACKUP_DIR: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_").expect("valid regex"));
 
 /// Back up a list of files before a write operation.
 /// Returns the backup directory path on success, or None if nothing was backed up.
@@ -111,29 +106,22 @@ pub fn provider_backup_files(paths: &ArcPaths, agent: &str) -> Vec<PathBuf> {
 fn list_backup_session_dirs(backups_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     collect_nested_sessions(backups_dir, 0, &mut dirs);
-    collect_legacy_flat_sessions(backups_dir, &mut dirs);
     dirs.dedup();
     dirs
 }
 
-/// Calendar day of the backup session: from `year/month/day` in the path, legacy name prefix, or mtime.
+/// Calendar day of the backup session: from `year/month/day` in the path, or mtime.
 fn backup_session_date(session_dir: &Path, backups_root: &Path) -> Option<NaiveDate> {
     if let Ok(rel) = session_dir.strip_prefix(backups_root) {
         let parts: Vec<&str> = rel
             .components()
             .filter_map(|c| c.as_os_str().to_str())
             .collect();
-        match parts.len() {
-            4 => {
-                let y: i32 = parts[0].parse().ok()?;
-                let m: u32 = parts[1].parse().ok()?;
-                let d: u32 = parts[2].parse().ok()?;
-                return NaiveDate::from_ymd_opt(y, m, d);
-            }
-            1 if parts[0].len() >= 10 => {
-                return NaiveDate::parse_from_str(&parts[0][..10], "%Y-%m-%d").ok();
-            }
-            _ => {}
+        if parts.len() == 4 {
+            let y: i32 = parts[0].parse().ok()?;
+            let m: u32 = parts[1].parse().ok()?;
+            let d: u32 = parts[2].parse().ok()?;
+            return NaiveDate::from_ymd_opt(y, m, d);
         }
     }
     mtime_date(session_dir)
@@ -161,27 +149,6 @@ fn collect_nested_sessions(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             continue;
         }
         collect_nested_sessions(&entry.path(), depth + 1, out);
-    }
-}
-
-fn collect_legacy_flat_sessions(backups_dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(backups_dir) else {
-        return;
-    };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let Ok(ft) = entry.file_type() else {
-            continue;
-        };
-        if !ft.is_dir() {
-            continue;
-        }
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if LEGACY_BACKUP_DIR.is_match(name) {
-            out.push(entry.path());
-        }
     }
 }
 
@@ -236,16 +203,6 @@ mod tests {
     fn nested_path_parses_session_date() {
         let root = Path::new("/h/.arc-cli/backups");
         let session = root.join("2020").join("01").join("15").join("120000_op");
-        assert_eq!(
-            backup_session_date(&session, root),
-            Some(NaiveDate::from_ymd_opt(2020, 1, 15).unwrap())
-        );
-    }
-
-    #[test]
-    fn legacy_flat_name_parses_session_date() {
-        let root = Path::new("/h/.arc-cli/backups");
-        let session = root.join("2020-01-15T12-00-00_provider-use");
         assert_eq!(
             backup_session_date(&session, root),
             Some(NaiveDate::from_ymd_opt(2020, 1, 15).unwrap())

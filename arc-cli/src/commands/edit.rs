@@ -1,9 +1,9 @@
 use std::env;
 use std::io::{self, IsTerminal};
 
-use arc_core::ArcPaths;
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
+use arc_core::paths::ArcPaths;
 
 use crate::cli::OutputFormat;
 use crate::commands::arc_toml_wizard;
@@ -31,5 +31,6 @@ pub fn run(paths: &ArcPaths, cache: &DetectCache, fmt: &OutputFormat) -> Result<
         ));
     }
 
-    arc_toml_wizard::edit_arc_toml_interactive(paths, cache, &cwd)
+    let _ = arc_toml_wizard::edit_arc_toml_interactive(paths, cache, &cwd)?;
+    Ok(())
 }

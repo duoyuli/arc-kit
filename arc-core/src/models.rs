@@ -8,7 +8,7 @@ pub enum ResourceKind {
     Skill,
     Mcp,
     ProviderProfile,
-    #[serde(rename = "subagent", alias = "sub_agent")]
+    #[serde(rename = "subagent")]
     SubAgent,
 }
 
@@ -45,7 +45,7 @@ impl std::str::FromStr for ResourceKind {
             "skill" => Ok(Self::Skill),
             "mcp" => Ok(Self::Mcp),
             "provider_profile" => Ok(Self::ProviderProfile),
-            "subagent" | "sub_agent" => Ok(Self::SubAgent),
+            "subagent" => Ok(Self::SubAgent),
             _ => Err(format!("unsupported resource kind: {s}")),
         }
     }

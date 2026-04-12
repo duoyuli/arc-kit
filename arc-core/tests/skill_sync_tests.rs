@@ -5,8 +5,8 @@ use arc_core::detect::{AgentInfo, DetectCache};
 use arc_core::engine::InstallEngine;
 use arc_core::models::ResourceKind;
 use arc_core::paths::ArcPaths;
+use arc_core::skill::SkillRegistry;
 use arc_core::skill::tracking::track_global_skill_install;
-use arc_core::skill::{SkillRegistry, run_global_skill_maintenance};
 
 #[test]
 fn cleanup_removes_tracked_global_install_when_skill_not_in_registry() {
@@ -66,37 +66,6 @@ fn cleanup_keeps_untracked_manual_install_when_skill_not_in_registry() {
     let report = registry.cleanup_removed_global_skills().unwrap();
     assert_eq!(report.removed, 0);
     assert!(manual.exists());
-}
-
-#[test]
-fn maintenance_bootstraps_legacy_arc_symlink_before_cleanup() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let local_skill = paths.local_skills_dir().join("legacy-skill");
-    fs::create_dir_all(&local_skill).unwrap();
-    fs::write(local_skill.join("SKILL.md"), "# legacy\n").unwrap();
-
-    let claude_root = temp.path().join(".claude");
-    fs::create_dir_all(claude_root.join("skills")).unwrap();
-    let target = claude_root.join("skills").join("legacy-skill");
-    std::os::unix::fs::symlink(&local_skill, &target).unwrap();
-    fs::remove_dir_all(&local_skill).unwrap();
-
-    let agents = BTreeMap::from([(
-        "claude".to_string(),
-        AgentInfo {
-            name: "claude".to_string(),
-            detected: true,
-            root: Some(claude_root.clone()),
-            executable: Some("/usr/bin/claude".to_string()),
-            version: Some("test".to_string()),
-        },
-    )]);
-    let cache = DetectCache::from_map(agents);
-
-    let report = run_global_skill_maintenance(&paths, &cache).unwrap();
-    assert_eq!(report.cleanup.removed, 1);
-    assert!(target.symlink_metadata().is_err());
 }
 
 #[test]

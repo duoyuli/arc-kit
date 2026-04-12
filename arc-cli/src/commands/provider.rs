@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::io::{self, IsTerminal};
 
-use arc_core::ArcPaths;
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
+use arc_core::paths::ArcPaths;
 use arc_core::provider::test::test_provider;
 use arc_core::provider::{
     ProviderInfo, apply_provider, build_provider_list_lines, load_providers_for_agent,
-    read_active_provider, supported_provider_agents, supports_provider_agent,
+    read_active_provider, seed_default_providers, supported_provider_agents,
+    supports_provider_agent,
 };
 use arc_tui::select_provider;
 use console::{Alignment, pad_str, style};
@@ -25,7 +26,7 @@ pub fn run(
     command: Option<ProviderCommand>,
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
-    arc_core::seed_default_providers(paths, cache);
+    seed_default_providers(paths, cache);
     match command {
         Some(ProviderCommand::List) | None => list(paths, fmt),
         Some(ProviderCommand::Use { name, agent }) => {

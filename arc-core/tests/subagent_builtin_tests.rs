@@ -1,4 +1,4 @@
-use arc_core::ArcPaths;
+use arc_core::paths::ArcPaths;
 use arc_core::subagent_registry::{
     SubagentEntryOrigin, find_global_subagent, load_merged_subagent_catalog,
 };

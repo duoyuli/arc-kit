@@ -118,6 +118,7 @@ pub struct SubagentInfoOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub targets: Option<Vec<String>>,
     pub prompt_file: String,
+    pub prompt: String,
 }
 
 // ── provider list ─────────────────────────────────────────

@@ -25,6 +25,14 @@ fn truncation_tail(max_width: usize) -> &'static str {
     }
 }
 
+fn count_summary(total: usize, filtered: usize, item_label: &str) -> String {
+    if filtered == total {
+        format!("{total} {item_label}")
+    } else {
+        format!("{filtered} of {total} {item_label}")
+    }
+}
+
 fn clamp_line_width(line: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -46,14 +54,16 @@ fn fuzzy_select_engine(
     display_labels: &[String],
     search_corpus: &[String],
     mode: SelectMode,
+    item_label: &str,
 ) -> io::Result<SelectResult> {
-    fuzzy_select_engine_at(display_labels, search_corpus, mode, 0)
+    fuzzy_select_engine_at(display_labels, search_corpus, mode, item_label, 0)
 }
 
 fn fuzzy_select_engine_at(
     display_labels: &[String],
     search_corpus: &[String],
     mode: SelectMode,
+    item_label: &str,
     initial_sel: usize,
 ) -> io::Result<SelectResult> {
     let term = Term::stderr();
@@ -170,11 +180,7 @@ fn fuzzy_select_engine_at(
         }
 
         let selected_count = checked.iter().filter(|&&c| c).count();
-        let count_str = if search.is_empty() {
-            format!("{} skills", display_labels.len())
-        } else {
-            format!("{} of {}", filtered.len(), display_labels.len())
-        };
+        let count_str = count_summary(display_labels.len(), filtered.len(), item_label);
         let hint = if is_multi {
             let base = format!(
                 "{}  ·  {} selected  ·  ↑↓ move  space toggle  ↵ confirm  esc quit",
@@ -275,7 +281,20 @@ pub(crate) fn fuzzy_select_opt(
     display_labels: &[String],
     search_corpus: &[String],
 ) -> io::Result<Option<usize>> {
-    match fuzzy_select_engine(display_labels, search_corpus, SelectMode::Single)? {
+    fuzzy_select_opt_with_label(display_labels, search_corpus, "skills")
+}
+
+pub(crate) fn fuzzy_select_opt_with_label(
+    display_labels: &[String],
+    search_corpus: &[String],
+    item_label: &str,
+) -> io::Result<Option<usize>> {
+    match fuzzy_select_engine(
+        display_labels,
+        search_corpus,
+        SelectMode::Single,
+        item_label,
+    )? {
         SelectResult::One(i) => Ok(Some(i)),
         _ => Ok(None),
     }
@@ -286,12 +305,22 @@ pub(crate) fn fuzzy_multi_select(
     search_corpus: &[String],
     defaults: &[bool],
 ) -> io::Result<Option<Vec<usize>>> {
+    fuzzy_multi_select_with_label(display_labels, search_corpus, defaults, "skills")
+}
+
+pub(crate) fn fuzzy_multi_select_with_label(
+    display_labels: &[String],
+    search_corpus: &[String],
+    defaults: &[bool],
+    item_label: &str,
+) -> io::Result<Option<Vec<usize>>> {
     match fuzzy_select_engine(
         display_labels,
         search_corpus,
         SelectMode::Multi {
             defaults: defaults.to_vec(),
         },
+        item_label,
     )? {
         SelectResult::Many(indices) => Ok(Some(indices)),
         _ => Ok(None),
@@ -307,10 +336,35 @@ pub(crate) fn browse_list<T, F>(
 where
     F: Fn(&T),
 {
+    browse_list_with_label(
+        items,
+        display_labels,
+        search_corpus,
+        "skills",
+        render_detail,
+    )
+}
+
+pub(crate) fn browse_list_with_label<T, F>(
+    items: &[T],
+    display_labels: &[String],
+    search_corpus: &[String],
+    item_label: &str,
+    render_detail: F,
+) -> io::Result<()>
+where
+    F: Fn(&T),
+{
     let term = Term::stdout();
     let mut cursor: usize = 0;
     loop {
-        match fuzzy_select_engine_at(display_labels, search_corpus, SelectMode::Single, cursor)? {
+        match fuzzy_select_engine_at(
+            display_labels,
+            search_corpus,
+            SelectMode::Single,
+            item_label,
+            cursor,
+        )? {
             SelectResult::One(i) => {
                 cursor = i;
                 if let Some(item) = items.get(i) {
@@ -339,7 +393,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_line_width, toggle_multi_checked};
+    use super::{clamp_line_width, count_summary, toggle_multi_checked};
     use console::{measure_text_width, style};
 
     #[test]
@@ -370,5 +424,11 @@ mod tests {
         toggle_multi_checked(&mut checked, &filtered, 1);
 
         assert_eq!(checked, vec![true, true, false]);
+    }
+
+    #[test]
+    fn count_summary_uses_custom_item_label() {
+        assert_eq!(count_summary(4, 4, "MCPs"), "4 MCPs");
+        assert_eq!(count_summary(4, 2, "MCPs"), "2 of 4 MCPs");
     }
 }

@@ -1,22 +1,31 @@
 mod agent;
 mod fuzzy;
 mod install;
+mod mcp;
+mod project;
 mod provider;
 mod skill;
 mod subagent;
 mod theme;
+mod uninstall;
 
 use console::style;
 use dialoguer::MultiSelect;
 
 pub use agent::{select_agent, select_agents};
 pub use install::run_install_wizard;
+pub use mcp::{pick_mcp, run_mcp_browser};
+pub use project::{
+    ProjectRequirementsSelection, run_project_requirements_editor,
+    run_project_requirements_editor_with_defaults,
+};
 pub use provider::select_provider;
 pub use skill::{
     run_skill_browser, run_skill_install_wizard, run_skill_require_pick_wizard,
     run_skill_require_pick_wizard_with_defaults, run_skill_uninstall_wizard,
 };
-pub use subagent::run_subagent_install_wizard;
+pub use subagent::{pick_subagent, run_subagent_browser, run_subagent_install_wizard};
+pub use uninstall::{UninstallEntry, run_capability_uninstall_wizard};
 
 /// Simple yes/no confirmation prompt. Returns the user's choice.
 pub fn confirm(prompt: &str, default: bool) -> std::io::Result<bool> {

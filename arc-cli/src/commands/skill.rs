@@ -2,12 +2,13 @@ use std::fs;
 use std::io::{self, IsTerminal};
 
 use arc_core::detect::DetectCache;
+use arc_core::engine::InstallEngine;
 use arc_core::error::ArcError;
 use arc_core::market::bootstrap::MarketSyncReport;
 use arc_core::models::{ResourceKind, SkillEntry};
+use arc_core::paths::ArcPaths;
 use arc_core::skill::SkillRegistry;
 use arc_core::skill::tracking::{track_global_skill_install, untrack_global_skill_install};
-use arc_core::{ArcPaths, InstallEngine};
 use arc_tui::{run_skill_browser, run_skill_install_wizard, run_skill_uninstall_wizard};
 use console::style;
 

@@ -37,11 +37,6 @@ pub fn parse_provider_config(section: &toml::Table) -> ProviderSettings {
             .and_then(toml::Value::as_str)
             .filter(|v| !v.is_empty())
             .map(str::to_string),
-        auth_json: section
-            .get("auth_json")
-            .and_then(toml::Value::as_str)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string),
     })
 }
 
@@ -60,13 +55,8 @@ pub fn apply_provider(
     info!("provider switch: codex — applying '{}'", new.name);
     let auth_path = paths.user_home().join(".codex").join("auth.json");
     let config_path = paths.user_home().join(".codex").join("config.toml");
-    let providers_path = paths.providers_dir().join("codex.toml");
     let new_mode = provider_mode(config)?;
-    let mut tracked_paths = vec![
-        auth_path.clone(),
-        config_path.clone(),
-        providers_path.clone(),
-    ];
+    let mut tracked_paths = vec![auth_path.clone(), config_path.clone()];
     if let Some(old) = old {
         tracked_paths.push(snapshot_path(paths, &old.name));
     }
@@ -74,22 +64,13 @@ pub fn apply_provider(
     let previous_states = capture_file_states(&tracked_paths)?;
 
     let apply_result = (|| {
-        let mut providers = read_toml_table(&providers_path);
-        let mut providers_dirty = false;
-
         if let Some(old) = old {
-            snapshot_current_auth(paths, old, &auth_path, &mut providers, &mut providers_dirty)?;
+            snapshot_current_auth(paths, old, &auth_path)?;
         }
 
-        let target_snapshot =
-            resolve_target_auth_snapshot(paths, new, &mut providers, &mut providers_dirty)?;
+        let target_snapshot = resolve_target_auth_snapshot(paths, new)?;
         write_auth_config(paths, config, new_mode, target_snapshot.as_deref())?;
         write_main_config(paths, new, config)?;
-        if providers_dirty {
-            write_toml_pretty(&providers_path, &toml::Value::Table(providers)).map_err(|err| {
-                ArcError::new(format!("failed to update Codex provider registry: {err}"))
-            })?;
-        }
         Ok(())
     })();
 
@@ -164,18 +145,11 @@ fn is_auth_only(config: &CodexProviderConfig) -> bool {
     config.api_key.is_none() && config.base_url.is_none()
 }
 
-fn snapshot_current_auth(
-    paths: &ArcPaths,
-    old: &ProviderInfo,
-    auth_path: &Path,
-    providers: &mut toml::Table,
-    providers_dirty: &mut bool,
-) -> Result<()> {
+fn snapshot_current_auth(paths: &ArcPaths, old: &ProviderInfo, auth_path: &Path) -> Result<()> {
     let ProviderSettings::Codex(config) = &old.settings else {
         return Ok(());
     };
     if !is_auth_only(config) {
-        cleanup_legacy_auth_json(providers, &old.name, providers_dirty);
         return Ok(());
     }
 
@@ -183,32 +157,26 @@ fn snapshot_current_auth(
         .map_err(|err| ArcError::new(format!("failed to read Codex auth config: {err}")))?
     else {
         clear_snapshot_file(&snapshot_path(paths, &old.name))?;
-        cleanup_legacy_auth_json(providers, &old.name, providers_dirty);
         return Ok(());
     };
 
     let Some(normalized) = normalized_auth_snapshot(&auth_json, "snapshot")? else {
         clear_snapshot_file(&snapshot_path(paths, &old.name))?;
-        cleanup_legacy_auth_json(providers, &old.name, providers_dirty);
         return Ok(());
     };
     atomic_write_string(&snapshot_path(paths, &old.name), &normalized)
         .map_err(|err| ArcError::new(format!("failed to write Codex auth snapshot: {err}")))?;
-    cleanup_legacy_auth_json(providers, &old.name, providers_dirty);
     Ok(())
 }
 
 fn resolve_target_auth_snapshot(
     paths: &ArcPaths,
     provider: &ProviderInfo,
-    providers: &mut toml::Table,
-    providers_dirty: &mut bool,
 ) -> Result<Option<String>> {
     let ProviderSettings::Codex(config) = &provider.settings else {
         return Ok(None);
     };
     if !is_auth_only(config) {
-        cleanup_legacy_auth_json(providers, &provider.name, providers_dirty);
         return Ok(None);
     }
 
@@ -217,32 +185,7 @@ fn resolve_target_auth_snapshot(
         return Ok(Some(auth_json));
     }
 
-    let legacy_auth_json = cleanup_legacy_auth_json(providers, &provider.name, providers_dirty)
-        .or_else(|| config.auth_json.clone());
-    let Some(auth_json) = legacy_auth_json else {
-        return Ok(None);
-    };
-
-    let Some(normalized) = normalized_auth_snapshot(&auth_json, "migrate")? else {
-        clear_snapshot_file(&snapshot_path)?;
-        return Ok(None);
-    };
-    atomic_write_string(&snapshot_path, &normalized)
-        .map_err(|err| ArcError::new(format!("failed to write Codex auth snapshot: {err}")))?;
-    Ok(Some(normalized))
-}
-
-fn cleanup_legacy_auth_json(
-    providers: &mut toml::Table,
-    provider_name: &str,
-    providers_dirty: &mut bool,
-) -> Option<String> {
-    let section = providers
-        .get_mut(provider_name)
-        .and_then(toml::Value::as_table_mut)?;
-    let auth_json = section.remove("auth_json")?.as_str().map(str::to_string)?;
-    *providers_dirty = true;
-    Some(auth_json)
+    Ok(None)
 }
 
 fn clear_auth_config(path: &Path) -> Result<()> {

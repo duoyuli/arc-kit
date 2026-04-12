@@ -1,11 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arc_core::ArcPaths;
 use arc_core::error::ArcError;
 use arc_core::git::validate_git_url;
 use arc_core::market::bootstrap::sync_market_source_resources;
 use arc_core::market::catalog::CatalogManager;
 use arc_core::market::sources::MarketSourceRegistry;
+use arc_core::paths::ArcPaths;
 use console::style;
 
 use crate::cli::{MarketCommand, OutputFormat};

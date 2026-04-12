@@ -72,6 +72,8 @@ CLI 只分两类语义（详见 [交互与自动化设计](../developer/design.m
 
 **约定**：只读命令须实现 `--format json`（例外见 [交互与自动化设计](../developer/design.md)，如 **`arc version`**）。带向导的写入命令须在**非交互式**下提供**显式参数**，以便一键执行、不读 stdin。写入类 JSON 使用统一 `WriteResult`（`ok` / `message` / `items`）。`arc project apply` / `project edit` 的边界情况见下文 [project apply](#project-apply) / [project edit](#project-edit)。
 
+对 `skill` / `mcp` / `subagent` 这类资源家族，要按整组 `list` / `info` / `install` / `uninstall` 一起判断是否“同时支持 for 人和 for Agent”；不能只因为 `install` 有向导，就认为整组都已经具备人类交互入口。统一判定标准见 [交互与自动化设计](../developer/design.md)。
+
 设计与实现对照见 [交互与自动化设计](../developer/design.md)。
 
 ---
@@ -125,7 +127,7 @@ arc version
 arc provider list
 arc provider          # 等同于 arc provider list
 
-arc provider use                        # 交互式下选择
+arc provider use                        # 交互式下按 coding agent tab 切页选择
 arc provider use proxy --agent claude
 arc provider use openai --agent codex
 
@@ -135,6 +137,8 @@ arc provider test --agent claude
 ```
 
 当前支持的 agent：`claude`、`codex`。
+
+交互式执行 `arc provider use` 时，顶部会按 coding agent 显示 tab，每页只展示当前 agent 的 provider。使用 `←/→` 或 `tab/backtab` 切换 agent，`↑/↓` 选择 provider，`enter` 确认，`esc` 取消。
 
 `arc provider test` 会向 API 端点探测连通性；任一受测项失败则**退出码 1**（含 `--format json`）；请同时查看 JSON 中每项的 `ok`。
 
@@ -209,10 +213,11 @@ arc skill info my-skill
 
 ## mcp
 
-管理全局 MCP：内置预设（随 arc-kit 发布）与用户配置合并；用户侧使用单一文件 `~/.arc-cli/mcps/registry.toml`（`[[mcps]]` 数组）。旧版「每个 MCP 一个 `*.toml`」会在首次访问时自动迁移到 `registry.toml`，原文件备份到 `mcps/migration-backup-*` 目录。裸调用 `arc mcp` 等同于 `arc mcp list`。
+管理全局 MCP：内置预设（随 arc-kit 发布）与用户配置合并；用户侧使用单一文件 `~/.arc-cli/mcps/registry.toml`（`[[mcps]]` 数组）。裸调用 `arc mcp` 等同于 `arc mcp list`。
 
 ```bash
 arc mcp list
+arc mcp info
 arc mcp info filesystem
 arc mcp info filesystem --show-secrets   # 打印 env/headers 明文（默认会脱敏）
 
@@ -228,12 +233,16 @@ arc mcp define mysvc --transport stdio --command npx --arg -y --arg @scope/pkg
 # 或在 install 上显式传入 transport/command/url（自定义安装路径）
 arc mcp install mysrv --transport stdio --command npx --arg -y --arg @scope/pkg
 
+arc mcp uninstall
 arc mcp uninstall mysvc
 ```
 
 - **合并规则**：同名时 **用户 registry 中的定义覆盖内置预设**。
+- **交互式**下执行 `arc mcp list` 会进入 browser，可直接查看详情；人类可读列表默认只展示名称、来源与目标 agent，不额外暴露 `stdio` / `streamable_http` 这类 transport 细节。**非交互式**下输出纯文本列表，`--format json` 下输出结构化集合。
+- **交互式**下可直接执行 `arc mcp info` 省略 `<name>` 进入选择；**非交互式**与 `--format json` 下必须显式提供 `<name>`。
+- **交互式**下可直接执行 `arc mcp uninstall` 进入向导；**非交互式**与 `--format json` 下必须显式提供 `<name>`。
 - `arc mcp list` / `arc mcp info` 会展示内置预设；`arc status` 只展示已经由 arc 管理并写入用户 registry 的全局 MCP，不会把未安装的内置预设误报为已生效。
-- `arc mcp install` 只管理**全局**定义；项目级 MCP 请写入 `arc.toml` 的 `[[mcps]]`，再执行 `arc project apply`。
+- `arc mcp install` / `arc mcp define` 只管理**全局**定义；项目级 MCP 请在 `arc.toml` 的 `[mcps] require` 中按名称引用，再执行 `arc project apply`。
 - `--agent` 可重复；不传时表示写入所有支持该资源类型的 agent。
 - CLI 参数中的 transport 取值为 `stdio`、`sse`、`streamable-http`；写入 `arc.toml` 时使用 TOML 枚举值 `stdio`、`sse`、`streamable_http`。
 - `stdio` transport 必须提供 `--command`，不能提供 `--url`；远程 transport（`sse` / `streamable-http`）必须提供 `--url`，不能提供 `--command`。
@@ -274,7 +283,7 @@ arc mcp define zhipu-web-search \
 - 对远程 MCP，header / env 中的 secret 必须始终使用环境变量占位符，不能把 token 直接写进命令或 `arc.toml`。
 - 仓库维护者新增内置 MCP 时，必须同步更新本节用户手册与开发规范，避免“预设存在但用户不知道如何使用”。
 
-项目级 MCP 在 `arc status` / `arc status --format json` 中会显示 `desired_scope` 与 `applied_scope`。**OpenClaw** 不支持由 arc 写入 MCP。对于仅支持全局配置的 agent（当前为 **Kimi CLI**），项目级声明默认会标记为 `skipped` / `requires_global_fallback`；显式传 `arc project apply --allow-global-fallback`，或在 `arc.toml` 的对应 `[[mcps]]` 下声明 `scope_fallback = "global"` 后，才会落到全局配置路径。
+项目级 MCP 在 `arc status` / `arc status --format json` 中会显示 `desired_scope` 与 `applied_scope`。**OpenClaw** 不支持由 arc 写入 MCP。对于仅支持全局配置的 agent（当前为 **Kimi CLI**），项目级引用默认会标记为 `skipped` / `requires_global_fallback`；显式传 `arc project apply --allow-global-fallback` 后，才会落到全局配置路径。
 
 各 agent 的 MCP 兼容性备注：
 
@@ -284,7 +293,7 @@ arc mcp define zhipu-web-search \
 - **OpenCode**：支持 `stdio`、`sse`、`streamable_http`；arc 写入 `~/.config/opencode/opencode.json`（全局）和项目根 `opencode.json`（项目），并会把通用占位符规范化为 `{env:VAR}` 语法。
 - **Gemini CLI**：支持 `stdio`、`sse`、`streamable_http`；arc 写入 `~/.gemini/settings.json` / `.gemini/settings.json`。HTTP 远程 MCP 会按 Gemini 的 `httpUrl` 字段写入。
 - **OpenClaw**：arc **不**管理 MCP（勿在 `targets` 中填写 `openclaw`）。
-- **Kimi CLI**：默认只支持全局 `~/.kimi/mcp.json`；若设置 `KIMI_SHARE_DIR`，arc 会写入该共享目录下的 `mcp.json`。项目级 `[[mcps]]` 需配合 `scope_fallback = "global"` 或 `--allow-global-fallback`。
+- **Kimi CLI**：默认只支持全局 `~/.kimi/mcp.json`；若设置 `KIMI_SHARE_DIR`，arc 会写入该共享目录下的 `mcp.json`。项目级 MCP 引用需配合 `--allow-global-fallback`。
 
 ---
 
@@ -300,16 +309,21 @@ arc subagent install
 arc subagent install arc-backend
 arc subagent install reviewer --prompt-file ./reviewer.md
 arc subagent install reviewer --agent claude --agent codex --description "Code review helper" --prompt-file ./reviewer.md
+arc subagent uninstall
 arc subagent uninstall reviewer
 ```
 
-- `arc subagent install` 只管理**全局**定义；项目级 subagent 请写入 `arc.toml` 的 `[[subagents]]`，再执行 `arc project apply`。
+- **交互式**下执行 `arc subagent list` 会进入 browser，可直接查看详情；**非交互式**下输出纯文本列表，`--format json` 下输出结构化集合。
+- **交互式**下可直接执行 `arc subagent info` 省略 `<name>` 进入选择；**非交互式**与 `--format json` 下必须显式提供 `<name>`。
+- `arc subagent info <name>` 在文本模式会展开显示 prompt 正文；JSON 也会返回 `prompt` 与 `prompt_file`。
+- `arc subagent install` 只管理**全局**定义；项目级 subagent 请在 `arc.toml` 的 `[subagents] require` 中按名称引用，再执行 `arc project apply`。
 - **交互式**下可直接执行 `arc subagent install` 进入向导；**非交互式**下必须显式提供 `<name>`。若名称命中内置/用户 catalog，可省略 `--prompt-file`；否则必须提供 `--prompt-file`。
+- **交互式**下可直接执行 `arc subagent uninstall` 进入向导；**非交互式**与 `--format json` 下必须显式提供 `<name>`。
 - 全局安装时读取 `--prompt-file`（或向导中给出的路径）文件内容并写入 agent 的全局 subagent 目录。
 - 内置 subagent 定义统一登记在 `built-in/subagent/index.toml`，当前包括：`arc-architecture`、`arc-backend`、`arc-brainstorm`、`arc-coordination`、`arc-db`、`arc-debug`、`arc-design`、`arc-dev-workflow`、`arc-frontend`、`arc-mobile`、`arc-orchestrator`、`arc-pdf`、`arc-pm`、`arc-qa`、`arc-scm`、`arc-tf-infra`、`arc-translator`。
 - `--agent` 可重复；不传时表示写入所有支持原生 subagent 的 agent。
 - 若目标包含 **Codex**，则必须提供非空 `description`；这是 Codex 原生 schema 的要求。
-- 项目级 `[[subagents]]` 的 `prompt_file` 相对路径以项目根目录为基准解析。
+- 项目级 subagent 只按名称引用；`description` / `prompt_file` / `targets` 都来自被引用的全局或内置定义。
 - 并非所有 agent 都支持 subagent。当前原生支持的是 **Claude Code**、**Codex** 与 **OpenCode**；对应路径分别是 `~/.claude/agents` / `./.claude/agents`、`~/.codex/agents` / `.codex/agents`、`~/.config/opencode/agents` / `.opencode/agents`。
 - **OpenClaw**、**Cursor CLI**、**Gemini CLI**、**Kimi CLI** 当前都不参与 arc 的 subagent 写入。
 
@@ -317,7 +331,7 @@ arc subagent uninstall reviewer
 
 ## project apply
 
-无 `arc.toml` 时：在**交互式**下先多选技能并写入 `arc.toml`，再安装项目级 skill、切换 provider，并应用项目级 MCP / subagent；**已有 `arc.toml`** 则直接执行这些步骤。从当前目录向上查找 `arc.toml`。
+无 `arc.toml` 时：在**交互式**下先多选 skill / MCP / subagent 名称并写入 `arc.toml`，再安装项目级 skill、切换 provider，并应用项目级 MCP / subagent；**已有 `arc.toml`** 则直接执行这些步骤。从当前目录向上查找 `arc.toml`。
 
 ```bash
 arc project apply
@@ -325,7 +339,7 @@ arc project apply
 
 | 场景 | 行为 |
 |------|------|
-| **交互式、无 `arc.toml`** | 向导创建 `arc.toml`，再应用 |
+| **交互式、无 `arc.toml`** | 打开单屏 `Project Requirements` 编辑器创建 `arc.toml`，再应用 |
 | **非交互式、无 `arc.toml`、无 `--format json`**（通常为管道等纯文本路径） | 退出码 1 |
 | **非交互式、无 `arc.toml`、`--format json`** | `stdout` 一条 `WriteResult`，`ok: false`，退出码 0 |
 | **已有 `arc.toml`** | 解析并应用 |
@@ -335,7 +349,7 @@ arc project apply
 `--agent` 与 `--all-agents` 互斥。
 命令行 `--agent` 与 `arc.toml` / 全局资源定义中的 `targets = [...]` 只能填写受支持的 agent id；拼写错误会直接报错，不会被当作“未检测到 agent”静默跳过。
 
-**应用阶段步骤**：解析 `arc.toml`；**自动添加 `[[markets]]` 中声明且本地尚未配置的 market 源**；校验 provider 存在；若已激活则跳过切换；在文本模式下先列出 `require` 中每个 skill 的状态（**present (project)** / **will install** / **not in catalog**）；若未检测到任何支持项目级 skill 的 agent，则提前报错退出；若有缺失且可安装的 skill，则解析目标 agent 后安装；随后应用项目级 `[[mcps]]` 与 `[[subagents]]`，并对已从 `targets` 中移除的 agent 做 shrink 清理；警告不可用 skill；输出结果。
+**应用阶段步骤**：解析 `arc.toml`；**自动添加 `[[markets]]` 中声明且本地尚未配置的 market 源**；校验 provider 存在；若已激活则跳过切换；在文本模式下先列出 `require` 中每个 skill 的状态（**present (project)** / **will install** / **not in catalog**）；若未检测到任何支持项目级 skill 的 agent，则提前报错退出；若有缺失且可安装的 skill，则解析目标 agent 后安装；随后从 merged catalog（内置 + 用户全局定义）解析 `[mcps] require` 与 `[subagents] require` 中的名称并写入项目级 agent 目录；若名称在 catalog 中不存在则记为 with issues 并跳过；最后对已从 require 列表中移除的项目级 capability 做 shrink 清理并输出结果。
 
 **`[[markets]]` 自动添加**：`arc.toml` 中声明的 market 源（`url` 必填）会在 `arc project apply` 时自动添加到本地配置，重复的 market（按 URL 生成的 id 判断）会自动跳过，不会报错。
 
@@ -345,7 +359,7 @@ arc project apply
 
 ## project edit
 
-交互编辑 `[skills] require`（保留 `[provider]` 与 `version`）。仅**交互式**。
+交互编辑 `[skills] require`、`[mcps] require`、`[subagents] require`（保留 `[provider]`、`version` 与 `[[markets]]`）。仅**交互式**。界面为单屏 `Project Requirements` 编辑器，而不是串行的多段向导。
 
 ```bash
 arc project edit
@@ -353,11 +367,18 @@ arc project edit
 
 | 场景 | 行为 |
 |------|------|
-| **交互式、有 `arc.toml`** | 多选写回；需同步再运行 `arc project apply` |
+| **交互式、有 `arc.toml`** | 打开单屏编辑器，多选写回；需同步再运行 `arc project apply` |
 | **交互式、无 `arc.toml`** | 报错，提示先 `arc project apply` |
 | **非交互式**（含 `--format json`） | `WriteResult` `ok: false`，不执行编辑 |
 
-`project edit` 会同步 `[[markets]]` 与当前选中的 market skill：不再被任何已选 skill 引用的自动关联 market 会从 `arc.toml` 移除；无关的现有 market 保留。该命令只在交互式终端可用，自动化场景请直接编辑 `arc.toml` 后再运行 `arc project apply`。
+**交互方式**：
+
+- 默认进入 `All` tab，可同时搜索全部 `skill` / `mcp` / `subagent`
+- `tab` / `backtab` 或 `←→` 切换 `All`、`Skills`、`MCPs`、`Subagents`
+- `↑↓` 移动，`space` 勾选，`enter` 保存，`esc` 取消整个编辑且不写文件
+- 当前 `arc.toml` 已引用、但 catalog 中已不存在的名称会以 `missing from catalog` 保留显示，便于显式删除或继续保留
+
+`project edit` 会同步 `[[markets]]` 与当前选中的 market skill：不再被任何已选 skill 引用的自动关联 market 会从 `arc.toml` 移除；无关的现有 market 保留。MCP 与 subagent 列表只写名称，不会把完整定义写回项目文件。该命令只在交互式终端可用，自动化场景请直接编辑 `arc.toml` 后再运行 `arc project apply`。
 
 ---
 
@@ -384,18 +405,11 @@ require = [
   "db-migration",
 ]
 
-[[mcps]]
-name = "filesystem"
-targets = ["claude", "codex"]
-transport = "stdio"
-command = "npx"
-args = ["@modelcontextprotocol/server-filesystem", "."]
+[mcps]
+require = ["filesystem", "github"]
 
-[[subagents]]
-name = "reviewer"
-description = "Repository reviewer"
-targets = ["claude", "codex"]
-prompt_file = "reviewer.md"
+[subagents]
+require = ["reviewer"]
 ```
 
 所有 section 可选，空文件合法。未知字段（如 `api_key`）会导致解析失败（退出码 1）。
@@ -428,77 +442,40 @@ prompt_file = "reviewer.md"
 
 重复的 market（按 URL 自动生成的 id 判断）会自动跳过，不会重复添加。
 
-### `[[mcps]]` — 项目级 MCP 定义
+### `[mcps]` — 项目级 MCP 依赖
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `name` | 是 | MCP 名称，需匹配 `^[a-z0-9][a-z0-9-_]{0,63}$` |
-| `targets` | 否 | 目标 agent id 列表；省略时按支持该资源类型的 agent 解析 |
-| `transport` | 是 | `stdio`、`sse` 或 `streamable_http` |
-| `command` | `stdio` 必填 | 本地命令 |
-| `args` | 否 | 命令参数列表 |
-| `env` | 否 | 环境变量映射 |
-| `cwd` | 否 | 工作目录；部分 agent/transport 支持 |
-| `env_file` | 否 | 额外环境文件；当前主要用于 Cursor stdio MCP |
-| `url` | 远程 transport 必填 | SSE / Streamable HTTP 地址 |
-| `headers` | 否 | 请求头映射 |
-| `timeout` | 否 | 超时（毫秒）；部分 agent/transport 支持 |
-| `startup_timeout_sec` | 否 | 启动超时（秒）；主要用于 Codex |
-| `tool_timeout_sec` | 否 | 工具调用超时（秒）；主要用于 Codex |
-| `enabled` | 否 | 是否启用；部分 agent 支持 |
-| `required` | 否 | 初始化失败是否视为错误；主要用于 Codex |
-| `trust` | 否 | 是否跳过确认；主要用于 Gemini |
-| `include_tools` | 否 | 工具白名单；部分 agent 支持 |
-| `exclude_tools` | 否 | 工具黑名单；部分 agent 支持 |
-| `oauth` | 否 | 远程 MCP OAuth 配置；部分 agent 支持 |
-| `description` | 否 | 人类可读描述 |
-| `scope_fallback` | 否 | 仅项目级 MCP 可用；当前只支持 `"global"` |
+| `require` | 否 | 要在项目中启用的 MCP 名称列表 |
 
-- `targets` 只能填写受支持的 agent id；拼写错误会直接报错。
-- `stdio` 不能同时设置 `url`；`sse` / `streamable_http` 不能同时设置 `command`。
-- `env` / `headers` 中涉及 secret 的键必须使用环境变量占位符。arc 接受 `${API_KEY}`、`$API_KEY`、`${env:API_KEY}`、`{env:API_KEY}` 以及对应的 `Bearer ...` 形式；写入不同 agent 时会按目标 agent 的语法规范化。
-- 对只支持全局 MCP 配置的 agent（如 **Kimi CLI**），可用 `scope_fallback = "global"` 单独声明 fallback；也可在命令行统一传 `--allow-global-fallback`。
+- 这些名称会在 `arc project apply` 时从 merged catalog（内置 + 用户全局 registry）里解析。
+- `arc.toml` **不再写** transport、headers、targets、fallback 等完整 MCP 定义；这些都来自被引用的全局或内置定义。
+- 若名称在 merged catalog 中不存在，`apply` 会把该项记为 with issues 并跳过。
+- 对只支持全局 MCP 配置的 agent（如 **Kimi CLI**），若需要项目级引用落到全局路径，使用 `arc project apply --allow-global-fallback`。
 
 示例：
 
 ```toml
-[[mcps]]
-name = "github"
-targets = ["claude", "kimi"]
-transport = "streamable_http"
-url = "https://api.github.com/mcp"
-headers = { authorization = "Bearer ${GITHUB_TOKEN}" }
-scope_fallback = "global"
+[mcps]
+require = ["filesystem", "github"]
 ```
 
-如果项目想复用内置预设的语义，建议在 `arc.toml` 中显式写完整定义，而不是假设 project 级会自动读取内置表。例如：
-
-```toml
-[[mcps]]
-name = "zhipu-web-search"
-targets = ["claude", "codex"]
-transport = "streamable_http"
-url = "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp"
-headers = { Authorization = "${AUTHORIZATION_ZHIPU_WEB_SEARCH}" }
-```
-
-### `[[subagents]]` — 项目级 subagent 定义
+### `[subagents]` — 项目级 subagent 依赖
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `name` | 是 | subagent 名称，需匹配 `^[a-z0-9][a-z0-9-_]{0,63}$` |
-| `description` | 否 | 人类可读描述；若 `targets` 包含 `codex` 则必填且不能为空 |
-| `targets` | 否 | 目标 agent id 列表；省略时按支持该资源类型的 agent 解析 |
-| `prompt_file` | 是 | 提示词文件路径；相对路径相对于项目根目录 |
+| `require` | 否 | 要在项目中启用的 subagent 名称列表 |
+
+- 这些名称会在 `arc project apply` 时从 merged catalog（内置 + 用户全局定义）里解析。
+- `arc.toml` **不再写** description、targets、prompt_file；这些都来自被引用的全局或内置 subagent 定义。
+- 若目标包含 **Codex**，则被引用的全局/内置 subagent 仍需满足非空 `description` 约束。
+- 若名称在 merged catalog 中不存在，`apply` 会把该项记为 with issues 并跳过。
 
 示例：
 
 ```toml
-[[subagents]]
-name = "reviewer"
-targets = ["claude", "codex"]
-description = "Repository reviewer"
-prompt_file = "reviewer.md"
+[subagents]
+require = ["reviewer"]
 ```
 
 ---

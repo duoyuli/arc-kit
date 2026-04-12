@@ -127,7 +127,6 @@ fn provider_switch_writes_codex_proxy_auth_with_only_api_key() {
         settings: ProviderSettings::Codex(CodexProviderConfig {
             base_url: Some("https://example.com".to_string()),
             api_key: Some("sk-test".to_string()),
-            ..Default::default()
         }),
     };
 
@@ -161,9 +160,6 @@ fn provider_switch_snapshots_codex_auth_for_auth_provider() {
         .unwrap();
     apply_provider(&paths, &proxy).unwrap();
 
-    let providers_content = fs::read_to_string(providers_dir.join("codex.toml")).unwrap();
-    assert!(!providers_content.contains("auth_json"));
-
     let snapshot = fs::read_to_string(codex_snapshot_path(temp.path(), "official")).unwrap();
     assert_eq!(snapshot, original_auth);
     let auth_content = fs::read_to_string(codex_dir.join("auth.json")).unwrap();
@@ -182,7 +178,6 @@ fn provider_switch_writes_codex_base_url() {
         settings: ProviderSettings::Codex(CodexProviderConfig {
             api_key: Some("sk-test".to_string()),
             base_url: Some("https://example.com/codex".to_string()),
-            ..Default::default()
         }),
     };
 
@@ -368,7 +363,6 @@ fn provider_switch_rolls_back_codex_auth_when_config_write_fails() {
         settings: ProviderSettings::Codex(CodexProviderConfig {
             api_key: Some("sk-new".to_string()),
             base_url: Some("https://example.com".to_string()),
-            ..Default::default()
         }),
     };
 
@@ -379,66 +373,6 @@ fn provider_switch_rolls_back_codex_auth_when_config_write_fails() {
     let config = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
     assert!(auth.contains("\"OPENAI_API_KEY\": \"sk-old\""));
     assert!(config.contains("model_providers = \"broken\""));
-}
-
-#[test]
-fn provider_switch_migrates_legacy_auth_snapshot_into_state_file() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let providers_dir = paths.providers_dir();
-    let codex_dir = temp.path().join(".codex");
-    fs::create_dir_all(&providers_dir).unwrap();
-    fs::create_dir_all(&codex_dir).unwrap();
-    fs::write(
-        providers_dir.join("codex.toml"),
-        "[official]\ndisplay_name = \"OpenAI\"\nauth_json = '{\"account_id\":\"acct_123\",\"refresh_token\":\"ref_tok\"}'\n",
-    )
-    .unwrap();
-    fs::write(
-        codex_dir.join("auth.json"),
-        "{\n  \"OPENAI_API_KEY\": \"sk-proxy\"\n}\n",
-    )
-    .unwrap();
-
-    apply_provider(&paths, &load_codex_provider(&paths, "official")).unwrap();
-
-    assert_eq!(
-        fs::read_to_string(codex_dir.join("auth.json")).unwrap(),
-        "{\n  \"account_id\": \"acct_123\",\n  \"refresh_token\": \"ref_tok\"\n}\n"
-    );
-    assert_eq!(
-        fs::read_to_string(codex_snapshot_path(temp.path(), "official")).unwrap(),
-        "{\n  \"account_id\": \"acct_123\",\n  \"refresh_token\": \"ref_tok\"\n}\n"
-    );
-    let providers_content = fs::read_to_string(providers_dir.join("codex.toml")).unwrap();
-    assert!(!providers_content.contains("auth_json"));
-}
-
-#[test]
-fn provider_switch_ignores_null_openai_api_key_in_legacy_snapshot() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let providers_dir = paths.providers_dir();
-    let codex_dir = temp.path().join(".codex");
-    fs::create_dir_all(&providers_dir).unwrap();
-    fs::create_dir_all(&codex_dir).unwrap();
-    fs::write(
-        providers_dir.join("codex.toml"),
-        "[official]\ndisplay_name = \"OpenAI\"\nauth_json = '{\"OPENAI_API_KEY\":null}'\n",
-    )
-    .unwrap();
-    fs::write(
-        codex_dir.join("auth.json"),
-        "{\n  \"OPENAI_API_KEY\": \"sk-proxy\"\n}\n",
-    )
-    .unwrap();
-
-    apply_provider(&paths, &load_codex_provider(&paths, "official")).unwrap();
-
-    assert!(!codex_dir.join("auth.json").exists());
-    assert!(!codex_snapshot_path(temp.path(), "official").exists());
-    let providers_content = fs::read_to_string(providers_dir.join("codex.toml")).unwrap();
-    assert!(!providers_content.contains("auth_json"));
 }
 
 #[test]
@@ -512,28 +446,6 @@ fn load_providers_parses_structured_codex_settings() {
     };
     assert_eq!(config.api_key.as_deref(), Some("sk-test"));
     assert_eq!(config.base_url.as_deref(), Some("https://example.com"));
-}
-
-#[test]
-fn load_providers_parses_codex_auth_snapshot() {
-    let temp = tempfile::tempdir().unwrap();
-    let providers_dir = temp.path().join(".arc-cli").join("providers");
-    fs::create_dir_all(&providers_dir).unwrap();
-    fs::write(
-        providers_dir.join("codex.toml"),
-        "[official]\ndisplay_name = \"OpenAI\"\nauth_json = '{\"account_id\":\"acct_123\"}'\n",
-    )
-    .unwrap();
-
-    let providers = load_providers_for_agent(&providers_dir, "codex");
-    assert_eq!(providers.len(), 1);
-    let ProviderSettings::Codex(config) = &providers[0].settings else {
-        panic!("expected codex settings");
-    };
-    assert_eq!(
-        config.auth_json.as_deref(),
-        Some("{\"account_id\":\"acct_123\"}")
-    );
 }
 
 #[test]

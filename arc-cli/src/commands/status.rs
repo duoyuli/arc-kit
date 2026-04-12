@@ -2,9 +2,11 @@ use arc_core::capability::{CapabilityStatusEntry, CapabilityTargetState, SourceS
 use std::env;
 
 use arc_core::agent::agent_specs;
+use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
+use arc_core::paths::ArcPaths;
+use arc_core::status::collect_status;
 use arc_core::status::{ProjectState, ProviderMatchState, StatusSnapshot};
-use arc_core::{ArcPaths, DetectCache, collect_status};
 use console::{Alignment, pad_str, style};
 
 use crate::cli::OutputFormat;

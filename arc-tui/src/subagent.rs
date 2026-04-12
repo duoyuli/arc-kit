@@ -1,5 +1,10 @@
+use std::io;
+
+use arc_core::subagent_registry::{SubagentCatalogEntry, SubagentEntryOrigin};
 use dialoguer::Input;
 
+use crate::agent::agent_display_name;
+use crate::fuzzy::{browse_list, fuzzy_select_opt};
 use crate::select_agents;
 use crate::theme::theme;
 
@@ -53,4 +58,86 @@ pub fn run_subagent_install_wizard(
         prompt_file.trim().to_string(),
         agents,
     ))
+}
+
+pub fn pick_subagent(entries: &[SubagentCatalogEntry]) -> io::Result<Option<String>> {
+    let (display_labels, search_corpus) = browser_data(entries);
+    let selected = fuzzy_select_opt(&display_labels, &search_corpus)?;
+
+    Ok(selected.and_then(|index| {
+        entries
+            .get(index)
+            .map(|entry| entry.definition.name.clone())
+    }))
+}
+
+pub fn run_subagent_browser<F>(entries: &[SubagentCatalogEntry], render_detail: F) -> io::Result<()>
+where
+    F: Fn(&SubagentCatalogEntry),
+{
+    let (display_labels, search_corpus) = browser_data(entries);
+    browse_list(entries, &display_labels, &search_corpus, render_detail)
+}
+
+fn browser_data(entries: &[SubagentCatalogEntry]) -> (Vec<String>, Vec<String>) {
+    let name_width = entries
+        .iter()
+        .map(|entry| entry.definition.name.len())
+        .max()
+        .unwrap_or(0);
+    let display_labels = entries
+        .iter()
+        .map(|entry| subagent_label(entry, name_width))
+        .collect();
+    let search_corpus = entries.iter().map(subagent_search_corpus).collect();
+
+    (display_labels, search_corpus)
+}
+
+fn subagent_label(entry: &SubagentCatalogEntry, name_width: usize) -> String {
+    let base = format!(
+        "{:<width$}  [{}]",
+        entry.definition.name,
+        origin_label(&entry.origin),
+        width = name_width
+    );
+    match targets_label(entry.definition.targets.as_ref()) {
+        Some(targets) => format!("{base}  → {targets}"),
+        None => base,
+    }
+}
+
+fn subagent_search_corpus(entry: &SubagentCatalogEntry) -> String {
+    let mut out = format!(
+        "{} {} {}",
+        entry.definition.name,
+        origin_label(&entry.origin),
+        entry.definition.prompt_file
+    );
+    if let Some(targets) = targets_label(entry.definition.targets.as_ref()) {
+        out.push(' ');
+        out.push_str(&targets);
+    }
+    if let Some(description) = &entry.definition.description {
+        out.push(' ');
+        out.push_str(description);
+    }
+    out
+}
+
+fn origin_label(origin: &SubagentEntryOrigin) -> &'static str {
+    match origin {
+        SubagentEntryOrigin::Builtin => "built-in",
+        SubagentEntryOrigin::User => "user",
+    }
+}
+
+fn targets_label(targets: Option<&Vec<String>>) -> Option<String> {
+    targets.map(|targets| {
+        targets
+            .iter()
+            .map(|id| agent_display_name(id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
 }

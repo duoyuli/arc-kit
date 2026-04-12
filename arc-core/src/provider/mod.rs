@@ -45,7 +45,6 @@ pub struct ClaudeProviderConfig {
 pub struct CodexProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
-    pub auth_json: Option<String>,
 }
 
 #[derive(Clone, Copy)]

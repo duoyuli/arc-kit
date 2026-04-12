@@ -1,12 +1,15 @@
 use std::path::{Path, PathBuf};
 
+use crate::capability::{McpDefinition, SubagentDefinition};
 use crate::detect::{DetectCache, project_skills_satisfied_all, project_skills_satisfied_any};
 use crate::engine::InstallEngine;
 use crate::error::Result;
+use crate::mcp_registry::load_merged_mcp_catalog;
 use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
 use crate::provider::{load_providers_for_agent, read_active_provider, supported_provider_agents};
 use crate::skill::SkillRegistry;
+use crate::subagent_registry::load_merged_subagent_catalog;
 
 use super::discover::find_project_config;
 use super::file::{ProjectConfig, load_project_config};
@@ -21,6 +24,20 @@ pub enum ConfigSource {
 pub struct Sourced<T> {
     pub value: T,
     pub source: ConfigSource,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProjectCapabilityRequirements {
+    pub mcps: Vec<McpDefinition>,
+    pub unavailable_mcps: Vec<String>,
+    pub subagents: Vec<ResolvedProjectSubagent>,
+    pub unavailable_subagents: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedProjectSubagent {
+    pub definition: SubagentDefinition,
+    pub prompt_body: String,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +59,10 @@ pub struct EffectiveConfig {
     pub missing_installable: Vec<String>,
     /// Required skills not found in any source at all.
     pub missing_unavailable: Vec<String>,
+    pub required_mcps: Vec<String>,
+    pub missing_mcps_unavailable: Vec<String>,
+    pub required_subagents: Vec<String>,
+    pub missing_subagents_unavailable: Vec<String>,
 }
 
 impl EffectiveConfig {
@@ -119,6 +140,9 @@ pub fn resolve_effective_config(
     let provider = resolve_provider(paths, &project_cfg, cache);
 
     let required_skills = project_cfg.skills.require.clone();
+    let capability_requirements = resolve_project_capability_requirements(paths, &project_cfg)?;
+    let required_mcps = project_cfg.mcps.require.clone();
+    let required_subagents = project_cfg.subagents.require.clone();
 
     let project_root = config_path
         .as_ref()
@@ -138,7 +162,58 @@ pub fn resolve_effective_config(
         missing_skills_absent,
         missing_installable,
         missing_unavailable,
+        required_mcps,
+        missing_mcps_unavailable: capability_requirements.unavailable_mcps,
+        required_subagents,
+        missing_subagents_unavailable: capability_requirements.unavailable_subagents,
     })
+}
+
+pub fn resolve_project_capability_requirements(
+    paths: &ArcPaths,
+    project_cfg: &ProjectConfig,
+) -> Result<ProjectCapabilityRequirements> {
+    let mut out = ProjectCapabilityRequirements::default();
+
+    if !project_cfg.mcps.require.is_empty() {
+        let catalog = load_merged_mcp_catalog(paths)?;
+        let by_name: std::collections::BTreeMap<String, McpDefinition> = catalog
+            .into_iter()
+            .map(|entry| (entry.definition.name.clone(), entry.definition))
+            .collect();
+        for name in &project_cfg.mcps.require {
+            if let Some(definition) = by_name.get(name) {
+                out.mcps.push(definition.clone());
+            } else {
+                out.unavailable_mcps.push(name.clone());
+            }
+        }
+    }
+
+    if !project_cfg.subagents.require.is_empty() {
+        let catalog = load_merged_subagent_catalog(paths)?;
+        let by_name: std::collections::BTreeMap<String, ResolvedProjectSubagent> = catalog
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.definition.name.clone(),
+                    ResolvedProjectSubagent {
+                        definition: entry.definition,
+                        prompt_body: entry.prompt_body,
+                    },
+                )
+            })
+            .collect();
+        for name in &project_cfg.subagents.require {
+            if let Some(entry) = by_name.get(name) {
+                out.subagents.push(entry.clone());
+            } else {
+                out.unavailable_subagents.push(name.clone());
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 fn resolve_provider(
@@ -238,6 +313,8 @@ mod tests {
         let cfg = resolve_effective_config(&paths, cwd.path(), &cache, &registry).unwrap();
         assert!(cfg.config_path.is_none());
         assert!(cfg.required_skills.is_empty());
+        assert!(cfg.required_mcps.is_empty());
+        assert!(cfg.required_subagents.is_empty());
     }
 
     #[test]
@@ -360,5 +437,63 @@ mod tests {
             "expected replication pending until all project-capable agents have the skill"
         );
         assert!(!cfg.is_up_to_date());
+    }
+
+    #[test]
+    fn project_capability_requirements_resolve_from_catalogs() {
+        let home = tempdir().unwrap();
+        let proj = tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".arc-cli/mcps")).unwrap();
+        fs::write(
+            home.path().join(".arc-cli/mcps/registry.toml"),
+            r#"
+registry_version = 1
+
+[[mcps]]
+name = "github"
+transport = "streamable_http"
+url = "https://example.com/mcp"
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(home.path().join(".arc-cli/subagents")).unwrap();
+        fs::write(
+            home.path().join(".arc-cli/subagents/reviewer.toml"),
+            r#"
+name = "reviewer"
+description = "Repository reviewer"
+targets = ["codex"]
+prompt_file = "ignored.md"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            home.path().join(".arc-cli/subagents/reviewer.md"),
+            "# reviewer\n",
+        )
+        .unwrap();
+        fs::write(
+            proj.path().join("arc.toml"),
+            r#"
+[mcps]
+require = ["github", "missing-mcp"]
+
+[subagents]
+require = ["reviewer", "missing-subagent"]
+"#,
+        )
+        .unwrap();
+
+        let (paths, _cache, _registry) = make_env(home.path());
+        let cfg = load_project_config(&proj.path().join("arc.toml")).unwrap();
+        let requirements = resolve_project_capability_requirements(&paths, &cfg).unwrap();
+
+        assert_eq!(requirements.mcps.len(), 1);
+        assert_eq!(requirements.mcps[0].name, "github");
+        assert_eq!(requirements.unavailable_mcps, vec!["missing-mcp"]);
+        assert_eq!(requirements.subagents.len(), 1);
+        assert_eq!(requirements.subagents[0].definition.name, "reviewer");
+        assert_eq!(requirements.subagents[0].prompt_body, "# reviewer\n");
+        assert_eq!(requirements.unavailable_subagents, vec!["missing-subagent"]);
     }
 }

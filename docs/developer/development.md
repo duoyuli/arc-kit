@@ -53,9 +53,11 @@ cargo run -p arc-cli -- status --format json
 
 脚本内容是 `cargo fmt --all --check`、`cargo check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`，以及在隔离的 `ARC_KIT_USER_HOME` 和内置清单覆盖下执行的 CLI 黑盒。除空目录 smoke 外，还覆盖：
 - `status --format json` 的模块存在性（含 `mcps`、`subagents`、`actions`）
-- `skill install`、`skill uninstall`、`provider use` 在 `--format json` 下的非交互缺参失败
+- `skill install`、`skill uninstall`、`mcp uninstall`、`subagent uninstall`、`provider use` 在 `--format json` 下的非交互缺参失败
 - `skill info`、`mcp info`、`subagent info` 的结构化 JSON 错误
 - `project apply` 的项目 capability 安装、目标收缩清理，以及 `--allow-global-fallback` 后的 `status` 反映
+
+当前自动回归仍以**非交互式**与 **JSON** 语义为主；`provider use` 的 tab 选择器、`skill` / `mcp` / `subagent` 的 browser，以及各类 TTY 向导仍建议在终端里做 spot-check。
 
 ### 回归适用范围
 
@@ -84,7 +86,7 @@ cargo run -p arc-cli -- status --format json
 ├── arc-cli/          # CLI、clap、用户输出、format JSON
 ├── arc-core/         # 领域逻辑、安装引擎、provider、market、skill、mcp、subagent、detect
 ├── arc-tui/          # 交互 UI（仅本 crate 依赖 dialoguer）
-├── built-in/         # 内置只读资源：skill/、market/、mcp/
+├── built-in/         # 内置只读资源：skill/、market/、mcp/、subagent/
 ├── docs/             # 官方文档（分层见 docs/README.md）
 ├── scripts/
 │   └── regression.sh # 发版前回归
@@ -95,7 +97,7 @@ cargo run -p arc-cli -- status --format json
 
 - **arc-cli**：`app` 编排、`cli` 命令表、`commands/*`、`format.rs` JSON 结构体。
 - **arc-core**：`CodingAgentSpec` 与 `detect`、`engine` + `adapters`、`skill` 三源注册表、`capability`（mcp / subagent canonical source、tracking、落地）、`market`、`provider`、`paths`、`io`。
-- **arc-tui**：模糊搜索、skill/provider 向导、主题。
+- **arc-tui**：模糊搜索、skill / mcp browser、provider tab 选择器、subagent 安装向导、通用 capability 卸载选择器、主题。
 
 ---
 

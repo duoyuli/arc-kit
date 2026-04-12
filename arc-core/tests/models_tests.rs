@@ -33,15 +33,12 @@ fn resource_kind_rejects_unknown_value() {
 }
 
 #[test]
-fn resource_kind_serializes_subagent_without_legacy_underscore() {
+fn resource_kind_serializes_subagent() {
     assert_eq!(
         serde_json::to_value(ResourceKind::SubAgent).unwrap(),
         json!("subagent")
     );
-    assert_eq!(
-        serde_json::from_value::<ResourceKind>(json!("sub_agent")).unwrap(),
-        ResourceKind::SubAgent
-    );
+    assert!(serde_json::from_value::<ResourceKind>(json!("sub_agent")).is_err());
 }
 
 #[test]

@@ -10,7 +10,10 @@ pub use apply::{
 };
 pub use discover::find_project_config;
 pub use file::{
-    MarketEntry, ProjectConfig, ProviderSection, SkillsSection, load_project_config,
-    parse_project_config, write_project_config,
+    MarketEntry, McpsSection, ProjectConfig, ProviderSection, SkillsSection, SubagentsSection,
+    load_project_config, parse_project_config, write_project_config,
 };
-pub use resolve::{ConfigSource, EffectiveConfig, Sourced, resolve_effective_config};
+pub use resolve::{
+    ConfigSource, EffectiveConfig, ProjectCapabilityRequirements, ResolvedProjectSubagent, Sourced,
+    resolve_effective_config, resolve_project_capability_requirements,
+};

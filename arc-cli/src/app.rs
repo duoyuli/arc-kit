@@ -5,8 +5,9 @@ use crate::cli::{
     Cli, Commands, McpCommand, ProjectCommand, SkillCommand, SkillListArgs, SubagentCommand,
 };
 use crate::commands::{apply, edit, market, mcp, provider, skill, status, subagent};
+use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
-use arc_core::{ArcPaths, DetectCache};
+use arc_core::paths::ArcPaths;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 use console::style;
