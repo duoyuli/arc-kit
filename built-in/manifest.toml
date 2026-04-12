@@ -1,4 +1,0 @@
-version = 1
-
-[index.market]
-path = "market/index.toml"

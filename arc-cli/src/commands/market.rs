@@ -257,7 +257,7 @@ fn remove(paths: &ArcPaths, target: &str, fmt: &OutputFormat) -> Result<(), ArcE
     if registry.is_builtin(&source.id) {
         return Err(ArcError::with_hint(
             format!("Built-in market source cannot be removed: {}", source.id),
-            "Built-in market sources come from built-in/manifest.toml and its market index",
+            "Built-in market sources come from built-in/market/index.toml",
         ));
     }
 

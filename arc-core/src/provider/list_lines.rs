@@ -84,36 +84,6 @@ pub fn format_provider_list_line_plain(line: &ProviderListLine) -> String {
     }
 }
 
-/// Same text layout as `arc provider list` (bold agent titles, dim descriptions).
-pub fn print_provider_list_lines_stdout(lines: &[ProviderListLine]) {
-    use console::style;
-
-    for line in lines {
-        match line {
-            ProviderListLine::AgentHeader { agent_display } => {
-                println!();
-                println!("  {}", style(agent_display).bold());
-            }
-            ProviderListLine::ProviderRow {
-                is_active,
-                display_name,
-                description,
-                name_width,
-                ..
-            } => {
-                let marker = if *is_active { "✓" } else { " " };
-                if description.is_empty() {
-                    println!("    {marker} {}", display_name);
-                } else {
-                    let padded = pad_str(display_name, *name_width, Alignment::Left, None);
-                    println!("    {marker} {padded}  {}", style(description).dim(),);
-                }
-            }
-        }
-    }
-    println!();
-}
-
 pub fn provider_list_line_mapping(lines: &[ProviderListLine]) -> Vec<Option<usize>> {
     lines
         .iter()

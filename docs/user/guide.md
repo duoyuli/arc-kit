@@ -193,7 +193,7 @@ arc skill info my-skill
 
 ### 项目与全局
 
-`arc.toml` 中 `[skills] require` 为本仓库声明。`arc project apply` 会把 skill 落到**仓库内**下列路径（仅针对你选定的、已检测且支持项目级的 agent）：**交互式**下若确有缺失 skill 可装，会多选目标 agent；**非交互式**下须显式传 **`--agent <id>`**（可重复）或 **`--all-agents`**（装到当前检测到的全部此类 agent）。`arc skill install` 则为**全局**安装到 `~` 下各 agent 目录。`arc status` 与 `arc project apply` 的列表：前者区分「仓库内完全未出现」与「尚未在所有相关 agent 路径下复制」；后者在未全部落地时仍会尝试安装，直至每个支持项目级的已检测 agent 路径下都有对应 skill（或你仅选择部分 agent 时只写入选中目标）。
+`arc.toml` 中 `[skills] require` 为本仓库声明。`arc project apply` 会把 skill 落到**仓库内**下列路径（仅针对你选定的、已检测且支持项目级的 agent）：**交互式**下若确有缺失 skill 可装，会多选目标 agent；**非交互式**下须显式传 **`--agent <id>`**（可重复）或 **`--all-agents`**（装到当前检测到的全部此类 agent）。`arc skill install` 则为**全局**安装到 `~` 下各 agent 目录。`arc status` 与 `arc project apply` 的列表语义不同：前者区分「仓库内完全未出现」与「尚未在所有相关 agent 路径下复制」；后者在未全部落地时仍会尝试安装，直至每个支持项目级的已检测 agent 路径下都有对应 skill（或你仅选择部分 agent 时只写入选中目标）。
 
 | Agent | 仓库内项目级 skill 路径（`<repo>/…`） |
 |-------|----------------------------------------|
@@ -218,6 +218,9 @@ arc mcp info filesystem --show-secrets   # 打印 env/headers 明文（默认会
 
 # 按内置预设名称安装（仅需名称，可选 --agent）
 arc mcp install filesystem --agent codex
+arc mcp install drawio --agent codex
+arc mcp install sequential-thinking --agent claude --agent codex
+arc mcp install zhipu-web-search --agent claude
 
 # 自定义全局 MCP（完整参数，非交互一键）
 arc mcp define mysvc --transport stdio --command npx --arg -y --arg @scope/pkg
@@ -234,10 +237,54 @@ arc mcp uninstall mysvc
 - `--agent` 可重复；不传时表示写入所有支持该资源类型的 agent。
 - CLI 参数中的 transport 取值为 `stdio`、`sse`、`streamable-http`；写入 `arc.toml` 时使用 TOML 枚举值 `stdio`、`sse`、`streamable_http`。
 - `stdio` transport 必须提供 `--command`，不能提供 `--url`；远程 transport（`sse` / `streamable-http`）必须提供 `--url`，不能提供 `--command`。
-- `--env KEY=VALUE` 与 `--header KEY=VALUE` 支持重复传入；涉及 secret 的键（如 `token`、`authorization`、`api_key`）必须使用环境变量占位符，例如 `${GITHUB_TOKEN}` 或 `Bearer ${GITHUB_TOKEN}`。
+- `--env KEY=VALUE` 与 `--header KEY=VALUE` 支持重复传入；涉及 secret 的键（如 `token`、`authorization`、`api_key`）必须使用环境变量占位符。arc 兼容多种主流语法，例如 `${GITHUB_TOKEN}`、`$GITHUB_TOKEN`、`${env:GITHUB_TOKEN}`、`{env:GITHUB_TOKEN}`，以及对应的 `Bearer ...` 形式。
 - `mcp list --format json` 中每条含 `origin`：`builtin` 或 `user`。
 
-项目级 MCP 在 `arc status` / `arc status --format json` 中会显示 `desired_scope` 与 `applied_scope`。对于只支持全局配置的 agent（例如 OpenClaw），默认会标记为 `skipped` / `requires_global_fallback`；显式传 `arc project apply --allow-global-fallback`，或在 `arc.toml` 的对应 `[[mcps]]` 下声明 `scope_fallback = "global"` 后，才会落到全局配置路径。
+当前随 arc-kit 发布的内置 MCP 预设：
+
+| 名称 | Transport | 用途 | 备注 |
+|------|------|------|------|
+| `filesystem` | `stdio` | 本地文件系统访问 | `npx -y @modelcontextprotocol/server-filesystem` |
+| `drawio` | `stdio` | AI 驱动图表创建与可视化 | `npx @next-ai-drawio/mcp-server@latest` |
+| `sequential-thinking` | `stdio` | 结构化分步思考与反思推理 | `npx -y @modelcontextprotocol/server-sequential-thinking` |
+| `zhipu-web-search` | `streamable_http` | 智谱联网搜索 | 请求头需提供 `Authorization = "${AUTHORIZATION_ZHIPU_WEB_SEARCH}"` |
+
+常见用法：
+
+```bash
+# 查看某个内置 MCP 的最终定义
+arc mcp info drawio
+arc mcp info zhipu-web-search
+
+# 安装智谱联网搜索到指定 agent
+arc mcp install zhipu-web-search --agent codex
+
+# 若想覆盖内置预设，可用同名 define 写入用户 registry
+arc mcp define zhipu-web-search \
+  --transport streamable-http \
+  --url https://open.bigmodel.cn/api/mcp/web_search_prime/mcp \
+  --header 'Authorization=${AUTHORIZATION_ZHIPU_WEB_SEARCH}'
+```
+
+内置预设的用户操作规范：
+
+- 内置预设只提供**可安装模板**，不会因为升级 arc-kit 就自动写入你的 agent 配置。
+- 需要显式执行 `arc mcp install <name>`，arc 才会把该定义写入 `~/.arc-cli/mcps/registry.toml` 并同步到目标 agent。
+- 如需覆盖内置值，使用同名 `arc mcp define <name> ...`；之后 `list/info/install` 会以用户 registry 版本为准。
+- 对远程 MCP，header / env 中的 secret 必须始终使用环境变量占位符，不能把 token 直接写进命令或 `arc.toml`。
+- 仓库维护者新增内置 MCP 时，必须同步更新本节用户手册与开发规范，避免“预设存在但用户不知道如何使用”。
+
+项目级 MCP 在 `arc status` / `arc status --format json` 中会显示 `desired_scope` 与 `applied_scope`。**OpenClaw** 不支持由 arc 写入 MCP。对于仅支持全局配置的 agent（当前为 **Kimi CLI**），项目级声明默认会标记为 `skipped` / `requires_global_fallback`；显式传 `arc project apply --allow-global-fallback`，或在 `arc.toml` 的对应 `[[mcps]]` 下声明 `scope_fallback = "global"` 后，才会落到全局配置路径。
+
+各 agent 的 MCP 兼容性备注：
+
+- **Claude Code**：支持 `stdio`、`streamable_http`；arc 写入 `~/.claude.json`（全局）和 `.mcp.json`（项目共享）。不支持 `sse`。
+- **Codex**：支持 `stdio` 与 `streamable_http`；arc 写入 `~/.codex/config.toml` / `.codex/config.toml` 的 `[mcp_servers.<name>]`。不支持 `sse`。
+- **Cursor CLI**：支持 `stdio`、`sse`、`streamable_http`；arc 写入 `~/.cursor/mcp.json` / `.cursor/mcp.json`，并会把通用占位符规范化为 Cursor 的 `${env:VAR}` 语法。
+- **OpenCode**：支持 `stdio`、`sse`、`streamable_http`；arc 写入 `~/.config/opencode/opencode.json`（全局）和项目根 `opencode.json`（项目），并会把通用占位符规范化为 `{env:VAR}` 语法。
+- **Gemini CLI**：支持 `stdio`、`sse`、`streamable_http`；arc 写入 `~/.gemini/settings.json` / `.gemini/settings.json`。HTTP 远程 MCP 会按 Gemini 的 `httpUrl` 字段写入。
+- **OpenClaw**：arc **不**管理 MCP（勿在 `targets` 中填写 `openclaw`）。
+- **Kimi CLI**：默认只支持全局 `~/.kimi/mcp.json`；若设置 `KIMI_SHARE_DIR`，arc 会写入该共享目录下的 `mcp.json`。项目级 `[[mcps]]` 需配合 `scope_fallback = "global"` 或 `--allow-global-fallback`。
 
 ---
 
@@ -247,18 +294,24 @@ arc mcp uninstall mysvc
 
 ```bash
 arc subagent list
-arc subagent info reviewer
+arc subagent info arc-backend
 
+arc subagent install
+arc subagent install arc-backend
 arc subagent install reviewer --prompt-file ./reviewer.md
 arc subagent install reviewer --agent claude --agent codex --description "Code review helper" --prompt-file ./reviewer.md
 arc subagent uninstall reviewer
 ```
 
 - `arc subagent install` 只管理**全局**定义；项目级 subagent 请写入 `arc.toml` 的 `[[subagents]]`，再执行 `arc project apply`。
-- `--prompt-file` 为必填；全局安装时读取命令行给出的文件内容并写入 agent 的全局 subagent 目录。
+- **交互式**下可直接执行 `arc subagent install` 进入向导；**非交互式**下必须显式提供 `<name>`。若名称命中内置/用户 catalog，可省略 `--prompt-file`；否则必须提供 `--prompt-file`。
+- 全局安装时读取 `--prompt-file`（或向导中给出的路径）文件内容并写入 agent 的全局 subagent 目录。
+- 内置 subagent 定义统一登记在 `built-in/subagent/index.toml`，当前包括：`arc-architecture`、`arc-backend`、`arc-brainstorm`、`arc-coordination`、`arc-db`、`arc-debug`、`arc-design`、`arc-dev-workflow`、`arc-frontend`、`arc-mobile`、`arc-orchestrator`、`arc-pdf`、`arc-pm`、`arc-qa`、`arc-scm`、`arc-tf-infra`、`arc-translator`。
 - `--agent` 可重复；不传时表示写入所有支持原生 subagent 的 agent。
+- 若目标包含 **Codex**，则必须提供非空 `description`；这是 Codex 原生 schema 的要求。
 - 项目级 `[[subagents]]` 的 `prompt_file` 相对路径以项目根目录为基准解析。
-- 并非所有 agent 都支持 subagent。当前原生支持以 `arc status` 的 `subagent_supported` / `subagent` 字段为准。
+- 并非所有 agent 都支持 subagent。当前原生支持的是 **Claude Code**、**Codex** 与 **OpenCode**；对应路径分别是 `~/.claude/agents` / `./.claude/agents`、`~/.codex/agents` / `.codex/agents`、`~/.config/opencode/agents` / `.opencode/agents`。
+- **OpenClaw**、**Cursor CLI**、**Gemini CLI**、**Kimi CLI** 当前都不参与 arc 的 subagent 写入。
 
 ---
 
@@ -304,7 +357,7 @@ arc project edit
 | **交互式、无 `arc.toml`** | 报错，提示先 `arc project apply` |
 | **非交互式**（含 `--format json`） | `WriteResult` `ok: false`，不执行编辑 |
 
-`project edit` 会同步 `[[markets]]` 与当前选中的 market skill：不再被任何已选 skill 引用的自动关联 market 会从 `arc.toml` 移除；无关的现有 market 保留。
+`project edit` 会同步 `[[markets]]` 与当前选中的 market skill：不再被任何已选 skill 引用的自动关联 market 会从 `arc.toml` 移除；无关的现有 market 保留。该命令只在交互式终端可用，自动化场景请直接编辑 `arc.toml` 后再运行 `arc project apply`。
 
 ---
 
@@ -340,6 +393,7 @@ args = ["@modelcontextprotocol/server-filesystem", "."]
 
 [[subagents]]
 name = "reviewer"
+description = "Repository reviewer"
 targets = ["claude", "codex"]
 prompt_file = "reviewer.md"
 ```
@@ -384,26 +438,48 @@ prompt_file = "reviewer.md"
 | `command` | `stdio` 必填 | 本地命令 |
 | `args` | 否 | 命令参数列表 |
 | `env` | 否 | 环境变量映射 |
+| `cwd` | 否 | 工作目录；部分 agent/transport 支持 |
+| `env_file` | 否 | 额外环境文件；当前主要用于 Cursor stdio MCP |
 | `url` | 远程 transport 必填 | SSE / Streamable HTTP 地址 |
 | `headers` | 否 | 请求头映射 |
+| `timeout` | 否 | 超时（毫秒）；部分 agent/transport 支持 |
+| `startup_timeout_sec` | 否 | 启动超时（秒）；主要用于 Codex |
+| `tool_timeout_sec` | 否 | 工具调用超时（秒）；主要用于 Codex |
+| `enabled` | 否 | 是否启用；部分 agent 支持 |
+| `required` | 否 | 初始化失败是否视为错误；主要用于 Codex |
+| `trust` | 否 | 是否跳过确认；主要用于 Gemini |
+| `include_tools` | 否 | 工具白名单；部分 agent 支持 |
+| `exclude_tools` | 否 | 工具黑名单；部分 agent 支持 |
+| `oauth` | 否 | 远程 MCP OAuth 配置；部分 agent 支持 |
 | `description` | 否 | 人类可读描述 |
 | `scope_fallback` | 否 | 仅项目级 MCP 可用；当前只支持 `"global"` |
 
 - `targets` 只能填写受支持的 agent id；拼写错误会直接报错。
 - `stdio` 不能同时设置 `url`；`sse` / `streamable_http` 不能同时设置 `command`。
-- `env` / `headers` 中涉及 secret 的键必须使用环境变量占位符，例如 `${API_KEY}` 或 `Bearer ${API_KEY}`。
-- 对只支持全局 MCP 配置的 agent，可用 `scope_fallback = "global"` 单独声明 fallback；也可在命令行统一传 `--allow-global-fallback`。
+- `env` / `headers` 中涉及 secret 的键必须使用环境变量占位符。arc 接受 `${API_KEY}`、`$API_KEY`、`${env:API_KEY}`、`{env:API_KEY}` 以及对应的 `Bearer ...` 形式；写入不同 agent 时会按目标 agent 的语法规范化。
+- 对只支持全局 MCP 配置的 agent（如 **Kimi CLI**），可用 `scope_fallback = "global"` 单独声明 fallback；也可在命令行统一传 `--allow-global-fallback`。
 
 示例：
 
 ```toml
 [[mcps]]
 name = "github"
-targets = ["claude", "openclaw"]
+targets = ["claude", "kimi"]
 transport = "streamable_http"
 url = "https://api.github.com/mcp"
 headers = { authorization = "Bearer ${GITHUB_TOKEN}" }
 scope_fallback = "global"
+```
+
+如果项目想复用内置预设的语义，建议在 `arc.toml` 中显式写完整定义，而不是假设 project 级会自动读取内置表。例如：
+
+```toml
+[[mcps]]
+name = "zhipu-web-search"
+targets = ["claude", "codex"]
+transport = "streamable_http"
+url = "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp"
+headers = { Authorization = "${AUTHORIZATION_ZHIPU_WEB_SEARCH}" }
 ```
 
 ### `[[subagents]]` — 项目级 subagent 定义
@@ -411,7 +487,7 @@ scope_fallback = "global"
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `name` | 是 | subagent 名称，需匹配 `^[a-z0-9][a-z0-9-_]{0,63}$` |
-| `description` | 否 | 人类可读描述 |
+| `description` | 否 | 人类可读描述；若 `targets` 包含 `codex` 则必填且不能为空 |
 | `targets` | 否 | 目标 agent id 列表；省略时按支持该资源类型的 agent 解析 |
 | `prompt_file` | 是 | 提示词文件路径；相对路径相对于项目根目录 |
 

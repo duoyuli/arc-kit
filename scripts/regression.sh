@@ -114,6 +114,7 @@ require_stderr() {
 write_fake_cli "codex" "-V" "codex-cli 0.116.0"
 write_fake_cli "claude" "-v" "2.1.84 (Claude Code)"
 write_fake_cli "openclaw" "-v" "openclaw 1.0.0"
+write_fake_cli "kimi" "--version" "kimi 1.0.0"
 
 # Base smoke in empty cwd.
 run_arc_in "$TMP_CWD" --help >/dev/null
@@ -200,7 +201,7 @@ mkdir -p "$PROJ_FALLBACK"
 cat >"$PROJ_FALLBACK/arc.toml" <<'EOF'
 [[mcps]]
 name = "github"
-targets = ["openclaw"]
+targets = ["kimi"]
 transport = "streamable_http"
 url = "https://api.github.com/mcp"
 EOF

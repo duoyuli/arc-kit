@@ -15,6 +15,7 @@ pub mod project;
 pub mod provider;
 pub mod skill;
 pub mod status;
+pub mod subagent_registry;
 
 // Re-exports for convenience.
 // Prefer module-scoped access (e.g. `arc_core::models::SkillEntry`) for new code;

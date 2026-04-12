@@ -11,7 +11,7 @@ use crate::error::{ArcError, Result};
 use crate::paths::ArcPaths;
 
 const REGISTRY_FILENAME: &str = "registry.toml";
-const BUILTIN_PRESETS_TOML: &str = include_str!("../built-in/mcp/presets.toml");
+const BUILTIN_PRESETS_TOML: &str = include_str!("../../built-in/mcp/index.toml");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct McpRegistryFile {
@@ -232,6 +232,16 @@ mod tests {
             v.iter()
                 .any(|d| d.name == "filesystem" && d.transport == McpTransportType::Stdio)
         );
+        assert!(
+            v.iter()
+                .any(|d| d.name == "drawio" && d.transport == McpTransportType::Stdio)
+        );
+        assert!(v.iter().any(|d| {
+            d.name == "sequential-thinking" && d.transport == McpTransportType::Stdio
+        }));
+        assert!(v.iter().any(|d| {
+            d.name == "zhipu-web-search" && d.transport == McpTransportType::StreamableHttp
+        }));
     }
 
     #[test]
@@ -243,8 +253,19 @@ mod tests {
             command: Some("npx".to_string()),
             args: vec!["-y".to_string(), "pkg".to_string()],
             env: BTreeMap::new(),
+            cwd: None,
+            env_file: None,
             url: None,
             headers: BTreeMap::new(),
+            timeout: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled: None,
+            required: None,
+            trust: None,
+            include_tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            oauth: None,
             description: None,
             scope_fallback: None,
         }];
@@ -255,8 +276,19 @@ mod tests {
             command: Some("custom".to_string()),
             args: vec![],
             env: BTreeMap::new(),
+            cwd: None,
+            env_file: None,
             url: None,
             headers: BTreeMap::new(),
+            timeout: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled: None,
+            required: None,
+            trust: None,
+            include_tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            oauth: None,
             description: None,
             scope_fallback: None,
         }];

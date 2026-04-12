@@ -34,6 +34,7 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum Commands {
     #[command(about = "Show current status")]
@@ -158,8 +159,8 @@ pub struct McpInfoArgs {
 
 #[derive(Args)]
 pub struct McpInstallArgs {
-    #[arg(help = "MCP name (built-in preset or user registry entry)")]
-    pub name: String,
+    #[arg(help = "MCP name (omit for interactive mode)")]
+    pub name: Option<String>,
     #[arg(short, long = "agent", value_name = "AGENT")]
     pub agent: Vec<String>,
     /// Custom install: set transport and command/url (omit to use a preset by name)
@@ -172,9 +173,41 @@ pub struct McpInstallArgs {
     #[arg(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
     #[arg(long)]
+    pub cwd: Option<String>,
+    #[arg(long = "env-file")]
+    pub env_file: Option<String>,
+    #[arg(long)]
     pub url: Option<String>,
     #[arg(long = "header", value_name = "KEY=VALUE")]
     pub header: Vec<String>,
+    #[arg(long)]
+    pub timeout: Option<u64>,
+    #[arg(long = "startup-timeout-sec")]
+    pub startup_timeout_sec: Option<u64>,
+    #[arg(long = "tool-timeout-sec")]
+    pub tool_timeout_sec: Option<u64>,
+    #[arg(long)]
+    pub enabled: bool,
+    #[arg(long)]
+    pub required: bool,
+    #[arg(long)]
+    pub trust: bool,
+    #[arg(long = "include-tool")]
+    pub include_tool: Vec<String>,
+    #[arg(long = "exclude-tool")]
+    pub exclude_tool: Vec<String>,
+    #[arg(long = "oauth-client-id")]
+    pub oauth_client_id: Option<String>,
+    #[arg(long = "oauth-client-secret")]
+    pub oauth_client_secret: Option<String>,
+    #[arg(long = "oauth-scope")]
+    pub oauth_scope: Option<String>,
+    #[arg(long = "oauth-callback-port")]
+    pub oauth_callback_port: Option<u16>,
+    #[arg(long = "oauth-auth-server-metadata-url")]
+    pub oauth_auth_server_metadata_url: Option<String>,
+    #[arg(long = "oauth-disabled")]
+    pub oauth_disabled: bool,
     #[arg(long)]
     pub description: Option<String>,
 }
@@ -194,9 +227,41 @@ pub struct McpDefineArgs {
     #[arg(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
     #[arg(long)]
+    pub cwd: Option<String>,
+    #[arg(long = "env-file")]
+    pub env_file: Option<String>,
+    #[arg(long)]
     pub url: Option<String>,
     #[arg(long = "header", value_name = "KEY=VALUE")]
     pub header: Vec<String>,
+    #[arg(long)]
+    pub timeout: Option<u64>,
+    #[arg(long = "startup-timeout-sec")]
+    pub startup_timeout_sec: Option<u64>,
+    #[arg(long = "tool-timeout-sec")]
+    pub tool_timeout_sec: Option<u64>,
+    #[arg(long)]
+    pub enabled: bool,
+    #[arg(long)]
+    pub required: bool,
+    #[arg(long)]
+    pub trust: bool,
+    #[arg(long = "include-tool")]
+    pub include_tool: Vec<String>,
+    #[arg(long = "exclude-tool")]
+    pub exclude_tool: Vec<String>,
+    #[arg(long = "oauth-client-id")]
+    pub oauth_client_id: Option<String>,
+    #[arg(long = "oauth-client-secret")]
+    pub oauth_client_secret: Option<String>,
+    #[arg(long = "oauth-scope")]
+    pub oauth_scope: Option<String>,
+    #[arg(long = "oauth-callback-port")]
+    pub oauth_callback_port: Option<u16>,
+    #[arg(long = "oauth-auth-server-metadata-url")]
+    pub oauth_auth_server_metadata_url: Option<String>,
+    #[arg(long = "oauth-disabled")]
+    pub oauth_disabled: bool,
     #[arg(long)]
     pub description: Option<String>,
 }
@@ -234,14 +299,14 @@ pub struct SubagentInfoArgs {
 
 #[derive(Args)]
 pub struct SubagentInstallArgs {
-    #[arg(help = "Subagent name")]
-    pub name: String,
+    #[arg(help = "Subagent name (omit for interactive mode)")]
+    pub name: Option<String>,
     #[arg(short, long = "agent", value_name = "AGENT")]
     pub agent: Vec<String>,
     #[arg(long)]
     pub description: Option<String>,
     #[arg(long = "prompt-file", value_name = "PATH")]
-    pub prompt_file: String,
+    pub prompt_file: Option<String>,
 }
 
 #[derive(Args)]

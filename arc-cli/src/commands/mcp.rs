@@ -1,15 +1,18 @@
 use std::collections::BTreeMap;
+use std::io::{self, IsTerminal};
 
 use arc_core::ArcPaths;
 use arc_core::agent::AppliedResourceScope;
 use arc_core::capability::{
-    CapabilityTargetState, McpApplyPlan, McpDefinition, McpTransportType, SourceScope,
-    apply_mcp_plan, list_tracked_capability_installs, remove_tracked_capability, save_global_mcp,
+    CapabilityTargetState, McpApplyPlan, McpDefinition, McpOAuthConfig, McpOAuthSettings,
+    McpTransportType, SourceScope, apply_mcp_plan, list_tracked_capability_installs,
+    remove_tracked_capability, save_global_mcp,
 };
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::mcp_registry::{self, McpEntryOrigin};
-use arc_core::models::ResourceKind;
+use arc_core::models::{CatalogResource, ResourceKind};
+use arc_tui::run_install_wizard;
 use console::style;
 
 use crate::cli::{
@@ -85,9 +88,6 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
             style(transport_label(mcp.transport)).cyan(),
             style(targets).dim()
         );
-        if let Some(description) = mcp.description {
-            println!("      {}", style(description).dim());
-        }
     }
     Ok(())
 }
@@ -191,7 +191,70 @@ fn install(
         || args.url.is_some()
         || !args.env.is_empty()
         || !args.header.is_empty()
+        || args.cwd.is_some()
+        || args.env_file.is_some()
+        || args.timeout.is_some()
+        || args.startup_timeout_sec.is_some()
+        || args.tool_timeout_sec.is_some()
+        || args.enabled
+        || args.required
+        || args.trust
+        || !args.include_tool.is_empty()
+        || !args.exclude_tool.is_empty()
+        || args.oauth_client_id.is_some()
+        || args.oauth_client_secret.is_some()
+        || args.oauth_scope.is_some()
+        || args.oauth_callback_port.is_some()
+        || args.oauth_auth_server_metadata_url.is_some()
+        || args.oauth_disabled
         || args.description.is_some();
+
+    if args.name.is_none() {
+        if custom {
+            return Err(ArcError::with_hint(
+                "MCP name required when passing custom install options.".to_string(),
+                "Usage: arc mcp install <name> [--transport <transport>] [--command <cmd> | --url <url>]".to_string(),
+            ));
+        }
+        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+        if *fmt == OutputFormat::Json || !is_tty {
+            return Err(ArcError::with_hint(
+                "MCP name required in non-interactive mode.".to_string(),
+                "Usage: arc mcp install <name> [--agent <agent>]".to_string(),
+            ));
+        }
+        let resources: Vec<CatalogResource> = catalog
+            .iter()
+            .map(|entry| CatalogResource {
+                id: entry.definition.name.clone(),
+                kind: ResourceKind::Mcp,
+                name: entry.definition.name.clone(),
+                source_id: match entry.origin {
+                    McpEntryOrigin::Builtin => "builtin".to_string(),
+                    McpEntryOrigin::User => "user".to_string(),
+                },
+                summary: entry.definition.description.clone().unwrap_or_default(),
+                installed: false,
+                installed_targets: Vec::new(),
+            })
+            .collect();
+        let agents = cache.agents_for_install(&ResourceKind::Mcp);
+        let (selected_names, selected_agents) = run_install_wizard("mcp", &resources, &agents)
+            .map_err(|err| ArcError::new(format!("interactive install failed: {err}")))?;
+        if selected_names.is_empty() || selected_agents.is_empty() {
+            return Ok(());
+        }
+        for name in selected_names {
+            let Some(entry) = catalog.iter().find(|e| e.definition.name == name) else {
+                continue;
+            };
+            let mut definition = entry.definition.clone();
+            definition.targets = Some(selected_agents.clone());
+            save_global_mcp(paths, &definition)?;
+            apply_and_print(paths, cache, definition, fmt, "installed")?;
+        }
+        return Ok(());
+    }
 
     let definition = if custom {
         let Some(t) = args.transport.clone() else {
@@ -204,11 +267,12 @@ fn install(
         };
         mcp_definition_from_install_tail(&args, t)?
     } else {
-        let Some(entry) = catalog.iter().find(|e| e.definition.name == args.name) else {
+        let name = args.name.as_deref().expect("checked optional name");
+        let Some(entry) = catalog.iter().find(|e| e.definition.name == name) else {
             return Err(ArcError::with_hint(
                 format!(
                     "mcp '{}' not found in built-in presets or user registry.",
-                    args.name
+                    name
                 ),
                 "Use `arc mcp define` to add a custom server, or check `arc mcp list`.".to_string(),
             ));
@@ -243,8 +307,26 @@ fn define(
         command: args.command,
         args: args.arg,
         env: parse_kv_pairs(args.env)?,
+        cwd: args.cwd,
+        env_file: args.env_file,
         url: args.url,
         headers: parse_kv_pairs(args.header)?,
+        timeout: args.timeout,
+        startup_timeout_sec: args.startup_timeout_sec,
+        tool_timeout_sec: args.tool_timeout_sec,
+        enabled: args.enabled.then_some(true),
+        required: args.required.then_some(true),
+        trust: args.trust.then_some(true),
+        include_tools: args.include_tool,
+        exclude_tools: args.exclude_tool,
+        oauth: build_oauth_config(
+            args.oauth_client_id,
+            args.oauth_client_secret,
+            args.oauth_scope,
+            args.oauth_callback_port,
+            args.oauth_auth_server_metadata_url,
+            args.oauth_disabled,
+        )?,
         description: args.description,
         scope_fallback: None,
     };
@@ -258,7 +340,7 @@ fn mcp_definition_from_install_tail(
     transport: McpTransportArg,
 ) -> Result<McpDefinition, ArcError> {
     Ok(McpDefinition {
-        name: args.name.clone(),
+        name: args.name.clone().expect("checked optional name"),
         targets: if args.agent.is_empty() {
             None
         } else {
@@ -268,11 +350,68 @@ fn mcp_definition_from_install_tail(
         command: args.command.clone(),
         args: args.arg.clone(),
         env: parse_kv_pairs(args.env.clone())?,
+        cwd: args.cwd.clone(),
+        env_file: args.env_file.clone(),
         url: args.url.clone(),
         headers: parse_kv_pairs(args.header.clone())?,
+        timeout: args.timeout,
+        startup_timeout_sec: args.startup_timeout_sec,
+        tool_timeout_sec: args.tool_timeout_sec,
+        enabled: args.enabled.then_some(true),
+        required: args.required.then_some(true),
+        trust: args.trust.then_some(true),
+        include_tools: args.include_tool.clone(),
+        exclude_tools: args.exclude_tool.clone(),
+        oauth: build_oauth_config(
+            args.oauth_client_id.clone(),
+            args.oauth_client_secret.clone(),
+            args.oauth_scope.clone(),
+            args.oauth_callback_port,
+            args.oauth_auth_server_metadata_url.clone(),
+            args.oauth_disabled,
+        )?,
         description: args.description.clone(),
         scope_fallback: None,
     })
+}
+
+fn build_oauth_config(
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    scope: Option<String>,
+    callback_port: Option<u16>,
+    auth_server_metadata_url: Option<String>,
+    disabled: bool,
+) -> Result<Option<McpOAuthConfig>, ArcError> {
+    if disabled
+        && (client_id.is_some()
+            || client_secret.is_some()
+            || scope.is_some()
+            || callback_port.is_some()
+            || auth_server_metadata_url.is_some())
+    {
+        return Err(ArcError::new(
+            "--oauth-disabled cannot be combined with OAuth settings".to_string(),
+        ));
+    }
+    if disabled {
+        return Ok(Some(McpOAuthConfig::Disabled(false)));
+    }
+    if client_id.is_none()
+        && client_secret.is_none()
+        && scope.is_none()
+        && callback_port.is_none()
+        && auth_server_metadata_url.is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(McpOAuthConfig::Settings(McpOAuthSettings {
+        client_id,
+        client_secret,
+        scope,
+        callback_port,
+        auth_server_metadata_url,
+    })))
 }
 
 fn apply_and_print(

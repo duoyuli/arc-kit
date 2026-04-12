@@ -1,6 +1,6 @@
 # 参与贡献 arc-kit
 
-感谢你的贡献！详细流程、发版门禁与仓库结构见 **[docs/developer/development.md](docs/developer/development.md)**。
+感谢你的贡献！详细流程、发版门禁与仓库结构见 **[docs/developer/development.md](docs/developer/development.md)**；命令语义与 JSON 约束见 **[docs/developer/design.md](docs/developer/design.md)**。
 
 ---
 
@@ -26,11 +26,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-若改动 CLI 入口，**还须**补充黑盒检查：
+若改动 CLI 命令或参数，**还须**补充黑盒检查：
 
 ```bash
 cargo run -p arc-cli -- --help
 cargo run -p arc-cli -- status
+cargo run -p arc-cli -- status --format json
 ```
 
 ## 代码规范
@@ -55,4 +56,4 @@ cargo run -p arc-cli -- status
 
 ## 许可证
 
-参与贡献即表示你同意以项目当前许可证（MIT）条款授权。详见根目录许可证文件。
+参与贡献即表示你同意以项目当前许可证声明为准。

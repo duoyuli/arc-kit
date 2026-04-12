@@ -1,16 +1,21 @@
 use std::fs;
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use arc_core::ArcPaths;
 use arc_core::agent::AppliedResourceScope;
 use arc_core::capability::{
     CapabilityTargetState, SourceScope, SubagentApplyPlan, SubagentDefinition, apply_subagent_plan,
-    list_tracked_capability_installs, load_global_subagents, remove_global_subagent,
-    remove_tracked_capability, save_global_subagent,
+    list_tracked_capability_installs, remove_global_subagent, remove_tracked_capability,
+    save_global_subagent, validate_subagent_targets,
 };
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::models::ResourceKind;
+use arc_core::subagent_registry::{
+    SubagentEntryOrigin, find_global_subagent, load_merged_subagent_catalog,
+};
+use arc_tui::run_subagent_install_wizard;
 use console::style;
 
 use crate::cli::{
@@ -36,36 +41,49 @@ pub fn run(
 }
 
 fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
-    let subagents = load_global_subagents(paths)?;
+    let subagents = load_merged_subagent_catalog(paths)?;
     if *fmt == OutputFormat::Json {
         return print_json(&SubagentListOutput {
             schema_version: SCHEMA_VERSION,
             subagents: subagents
                 .into_iter()
                 .map(|item| SubagentItem {
-                    name: item.name,
-                    description: item.description,
-                    targets: item.targets,
-                    prompt_file: item.prompt_file,
+                    name: item.definition.name,
+                    origin: match item.origin {
+                        SubagentEntryOrigin::Builtin => "builtin".to_string(),
+                        SubagentEntryOrigin::User => "user".to_string(),
+                    },
+                    description: item.definition.description,
+                    targets: item.definition.targets,
+                    prompt_file: item.definition.prompt_file,
                 })
                 .collect(),
         });
     }
 
     if subagents.is_empty() {
-        println!("  {}", style("No global subagents installed.").yellow());
+        println!("  {}", style("No global subagents available.").yellow());
         return Ok(());
     }
 
     for item in subagents {
-        println!("  {}", style(&item.name).bold());
-        if let Some(description) = item.description {
+        let origin = match item.origin {
+            SubagentEntryOrigin::Builtin => "built-in",
+            SubagentEntryOrigin::User => "user",
+        };
+        println!(
+            "  {} {}",
+            style(&item.definition.name).bold(),
+            style(format!("[{origin}]")).dim()
+        );
+        if let Some(description) = item.definition.description {
             println!("      {}", style(description).dim());
         }
         println!(
             "      {}",
             style(
-                item.targets
+                item.definition
+                    .targets
                     .map(|targets| targets.join(", "))
                     .unwrap_or_else(|| "all detected agents".to_string())
             )
@@ -76,8 +94,7 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
 }
 
 fn info(paths: &ArcPaths, args: SubagentInfoArgs, fmt: &OutputFormat) -> Result<(), ArcError> {
-    let subagents = load_global_subagents(paths)?;
-    let Some(subagent) = subagents.into_iter().find(|item| item.name == args.name) else {
+    let Some(subagent) = find_global_subagent(paths, &args.name)? else {
         if *fmt == OutputFormat::Json {
             return print_json(&ErrorOutput {
                 schema_version: SCHEMA_VERSION,
@@ -90,21 +107,34 @@ fn info(paths: &ArcPaths, args: SubagentInfoArgs, fmt: &OutputFormat) -> Result<
     if *fmt == OutputFormat::Json {
         return print_json(&SubagentInfoOutput {
             schema_version: SCHEMA_VERSION,
-            name: subagent.name,
-            description: subagent.description,
-            targets: subagent.targets,
-            prompt_file: subagent.prompt_file,
+            name: subagent.definition.name,
+            origin: match subagent.origin {
+                SubagentEntryOrigin::Builtin => "builtin".to_string(),
+                SubagentEntryOrigin::User => "user".to_string(),
+            },
+            description: subagent.definition.description,
+            targets: subagent.definition.targets,
+            prompt_file: subagent.definition.prompt_file,
         });
     }
 
-    println!("  {}", style(&subagent.name).bold());
-    if let Some(description) = subagent.description {
+    println!(
+        "  {} {}",
+        style(&subagent.definition.name).bold(),
+        style(match subagent.origin {
+            SubagentEntryOrigin::Builtin => "[built-in]",
+            SubagentEntryOrigin::User => "[user]",
+        })
+        .dim()
+    );
+    if let Some(description) = subagent.definition.description {
         println!("  description: {}", description);
     }
-    println!("  prompt_file: {}", subagent.prompt_file);
+    println!("  prompt_file: {}", subagent.definition.prompt_file);
     println!(
         "  targets: {}",
         subagent
+            .definition
             .targets
             .map(|targets| targets.join(", "))
             .unwrap_or_else(|| "all detected agents".to_string())
@@ -118,20 +148,14 @@ fn install(
     args: SubagentInstallArgs,
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
-    let prompt_path = PathBuf::from(&args.prompt_file);
-    let prompt_body = fs::read_to_string(&prompt_path)
-        .map_err(|e| ArcError::new(format!("failed to read {}: {e}", prompt_path.display())))?;
-    let definition = SubagentDefinition {
-        name: args.name,
-        description: args.description,
-        targets: if args.agent.is_empty() {
-            None
-        } else {
-            Some(args.agent)
-        },
-        prompt_file: prompt_path.display().to_string(),
-    };
-    save_global_subagent(paths, &definition, &prompt_body)?;
+    let resolved = resolve_install_inputs(paths, cache, args, fmt)?;
+    let definition = resolved.definition;
+    let prompt_path = resolved.prompt_path;
+    let prompt_body = resolved.prompt_body;
+    let _ = validate_subagent_targets(cache, &definition)?;
+    if resolved.persist_definition {
+        save_global_subagent(paths, &definition, &prompt_body)?;
+    }
     let statuses = apply_subagent_plan(
         paths,
         cache,
@@ -181,6 +205,108 @@ fn install(
         );
     }
     Ok(())
+}
+
+struct ResolvedInstallInputs {
+    definition: SubagentDefinition,
+    prompt_path: PathBuf,
+    prompt_body: String,
+    persist_definition: bool,
+}
+
+fn resolve_install_inputs(
+    paths: &ArcPaths,
+    cache: &DetectCache,
+    args: SubagentInstallArgs,
+    fmt: &OutputFormat,
+) -> Result<ResolvedInstallInputs, ArcError> {
+    let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let usage = "Usage: arc subagent install <name> [--prompt-file <path>] [--agent <agent>] [--description <text>]".to_string();
+
+    if args.name.is_none() {
+        if *fmt == OutputFormat::Json || !is_tty {
+            return Err(ArcError::with_hint(
+                "Subagent name required in non-interactive mode.".to_string(),
+                usage,
+            ));
+        }
+
+        let available_agents = cache.agents_for_install(&ResourceKind::SubAgent);
+        let selected_agents = if args.agent.is_empty() {
+            available_agents.clone()
+        } else {
+            args.agent.clone()
+        };
+        let (name, description, prompt_file, agents) = run_subagent_install_wizard(
+            &available_agents,
+            args.name.as_deref(),
+            args.description.as_deref(),
+            args.prompt_file.as_deref(),
+            &selected_agents,
+        )
+        .map_err(|err| ArcError::new(format!("interactive install failed: {err}")))?;
+        let prompt_path = PathBuf::from(&prompt_file);
+        let prompt_body = fs::read_to_string(&prompt_path)
+            .map_err(|e| ArcError::new(format!("failed to read {}: {e}", prompt_path.display())))?;
+        return Ok(ResolvedInstallInputs {
+            definition: SubagentDefinition {
+                name,
+                description,
+                targets: if agents.is_empty() {
+                    None
+                } else {
+                    Some(agents)
+                },
+                prompt_file: prompt_path.display().to_string(),
+            },
+            prompt_path,
+            prompt_body,
+            persist_definition: true,
+        });
+    }
+
+    let name = args.name.expect("checked optional name");
+    if let Some(prompt_file) = args.prompt_file {
+        let prompt_path = PathBuf::from(&prompt_file);
+        let prompt_body = fs::read_to_string(&prompt_path)
+            .map_err(|e| ArcError::new(format!("failed to read {}: {e}", prompt_path.display())))?;
+        return Ok(ResolvedInstallInputs {
+            definition: SubagentDefinition {
+                name,
+                description: args.description,
+                targets: if args.agent.is_empty() {
+                    None
+                } else {
+                    Some(args.agent)
+                },
+                prompt_file: prompt_path.display().to_string(),
+            },
+            prompt_path,
+            prompt_body,
+            persist_definition: true,
+        });
+    }
+
+    let Some(entry) = find_global_subagent(paths, &name)? else {
+        return Err(ArcError::with_hint(
+            "Prompt file required in non-interactive mode unless the subagent exists in the built-in/user catalog.".to_string(),
+            usage,
+        ));
+    };
+    let mut definition = entry.definition;
+    if let Some(description) = args.description {
+        definition.description = Some(description);
+    }
+    if !args.agent.is_empty() {
+        definition.targets = Some(args.agent);
+    }
+    let prompt_path = PathBuf::from(&definition.prompt_file);
+    Ok(ResolvedInstallInputs {
+        definition,
+        prompt_path,
+        prompt_body: entry.prompt_body,
+        persist_definition: false,
+    })
 }
 
 fn uninstall(

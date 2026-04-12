@@ -12,23 +12,20 @@ fn arc_cmd() -> Command {
 fn arc_cmd_with_home(home: &Path) -> Command {
     let mut cmd = arc_cmd();
     cmd.env("ARC_KIT_USER_HOME", home);
-    cmd.env("ARC_KIT_BUILTIN_MANIFEST_URL", empty_builtin_manifest(home));
+    cmd.env(
+        "ARC_KIT_BUILTIN_MARKET_INDEX_URL",
+        empty_builtin_market_index(home),
+    );
     cmd
 }
 
-fn empty_builtin_manifest(home: &Path) -> String {
+fn empty_builtin_market_index(home: &Path) -> String {
     let builtin_dir = home.join("built-in");
     let market_dir = builtin_dir.join("market");
-    let manifest = builtin_dir.join("manifest.toml");
     let index = market_dir.join("index.toml");
     fs::create_dir_all(&market_dir).unwrap();
-    fs::write(
-        &manifest,
-        "version = 1\n\n[index.market]\npath = \"market/index.toml\"\n",
-    )
-    .unwrap();
     fs::write(&index, "version = 1\nupdated_at = \"2026-04-09\"\n").unwrap();
-    format!("file://{}", manifest.display())
+    format!("file://{}", index.display())
 }
 
 #[test]
@@ -194,7 +191,6 @@ fn skill_list_uses_builtin_market_index_without_local_catalog() {
     let repo = temp.path().join("example-market");
     let builtin_dir = temp.path().join("built-in");
     let market_dir = builtin_dir.join("market");
-    let manifest = builtin_dir.join("manifest.toml");
     let index = market_dir.join("index.toml");
 
     run_git(
@@ -214,11 +210,6 @@ fn skill_list_uses_builtin_market_index_without_local_catalog() {
 
     std::fs::create_dir_all(&market_dir).unwrap();
     std::fs::write(
-        &manifest,
-        "version = 1\n\n[index.market]\npath = \"market/index.toml\"\n",
-    )
-    .unwrap();
-    std::fs::write(
         &index,
         format!(
             "version = 1\nupdated_at = \"2026-03-26\"\n\n[[repo]]\ngit_url = \"file://{}\"\n",
@@ -232,8 +223,8 @@ fn skill_list_uses_builtin_market_index_without_local_catalog() {
         .arg("list")
         .env("ARC_KIT_USER_HOME", temp.path())
         .env(
-            "ARC_KIT_BUILTIN_MANIFEST_URL",
-            format!("file://{}", manifest.display()),
+            "ARC_KIT_BUILTIN_MARKET_INDEX_URL",
+            format!("file://{}", index.display()),
         )
         .output()
         .unwrap();
@@ -371,6 +362,49 @@ fn mcp_install_writes_global_definition_and_codex_config() {
 }
 
 #[test]
+fn mcp_install_writes_codex_remote_http_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_cli(&bin_dir, "codex", "codex-cli 0.116.0");
+
+    let output = arc_cmd()
+        .args([
+            "mcp",
+            "install",
+            "figma",
+            "--agent",
+            "codex",
+            "--transport",
+            "streamable-http",
+            "--url",
+            "https://mcp.figma.com/mcp",
+            "--header",
+            "Authorization=Bearer ${FIGMA_TOKEN}",
+            "--header",
+            "X-Figma-Region=us-east-1",
+        ])
+        .env("ARC_KIT_USER_HOME", temp.path())
+        .env(
+            "PATH",
+            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let codex_body = fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap();
+    assert!(codex_body.contains("[mcp_servers.figma]"));
+    assert!(codex_body.contains("url = \"https://mcp.figma.com/mcp\""));
+    assert!(codex_body.contains("bearer_token_env_var = \"FIGMA_TOKEN\""));
+    assert!(codex_body.contains("http_headers"));
+}
+
+#[test]
 fn mcp_install_rejects_plaintext_secret_headers() {
     let temp = tempfile::tempdir().unwrap();
     let output = arc_cmd()
@@ -452,6 +486,47 @@ fn subagent_install_writes_global_definition_and_codex_agent() {
 }
 
 #[test]
+fn subagent_install_builtin_by_name_writes_agent_without_persisting_user_definition() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_cli(&bin_dir, "codex", "codex-cli 0.116.0");
+
+    let output = arc_cmd()
+        .args(["subagent", "install", "arc-backend", "--agent", "codex"])
+        .env("ARC_KIT_USER_HOME", temp.path())
+        .env(
+            "PATH",
+            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !temp
+            .path()
+            .join(".arc-cli/subagents/arc-backend.toml")
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join(".arc-cli/subagents/arc-backend.md")
+            .exists()
+    );
+    let codex_agent = temp.path().join(".codex/agents/arc-backend.toml");
+    assert!(codex_agent.exists());
+    let body = fs::read_to_string(codex_agent).unwrap();
+    assert!(body.contains("name = \"arc-backend\""));
+    assert!(body.contains("developer_instructions"));
+}
+
+#[test]
 fn subagent_install_rejects_unknown_target_agent() {
     let temp = tempfile::tempdir().unwrap();
     let prompt = temp.path().join("reviewer.md");
@@ -473,6 +548,85 @@ fn subagent_install_rejects_unknown_target_agent() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unsupported target agent"));
+}
+
+#[test]
+fn subagent_install_no_name_noninteractive_fails_with_arc_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["subagent", "install"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Subagent name required"));
+    assert!(stderr.contains("arc subagent install"));
+}
+
+#[test]
+fn subagent_install_missing_prompt_file_noninteractive_fails_with_arc_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["subagent", "install", "reviewer"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Prompt file required"));
+    assert!(stderr.contains("arc subagent install"));
+}
+
+#[test]
+fn subagent_install_requires_description_for_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_cli(&bin_dir, "codex", "codex-cli 0.116.0");
+    let prompt = temp.path().join("reviewer.md");
+    fs::write(&prompt, "# Reviewer\n").unwrap();
+
+    let output = arc_cmd()
+        .args([
+            "subagent",
+            "install",
+            "reviewer",
+            "--agent",
+            "codex",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+        ])
+        .env("ARC_KIT_USER_HOME", temp.path())
+        .env(
+            "PATH",
+            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("description_required"));
+}
+
+#[test]
+fn subagent_list_json_marks_builtin_origin() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["subagent", "list", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}, output: {stdout}"));
+    let backend = json["subagents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "arc-backend")
+        .expect("arc-backend should exist");
+    assert_eq!(backend["origin"], "builtin");
 }
 
 fn run_git(args: &[&str], cwd: &Path) {
@@ -538,6 +692,41 @@ fn mcp_list_json_includes_builtin_origin() {
         .find(|item| item["name"] == "filesystem")
         .expect("filesystem preset should exist");
     assert_eq!(filesystem["origin"], "builtin");
+    assert!(
+        json["mcps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "drawio" && item["origin"] == "builtin")
+    );
+    assert!(
+        json["mcps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "sequential-thinking" && item["origin"] == "builtin")
+    );
+    assert!(
+        json["mcps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "zhipu-web-search" && item["origin"] == "builtin")
+    );
+}
+
+#[test]
+fn mcp_list_text_omits_description_lines() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["mcp", "list"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("drawio"));
+    assert!(!stdout.contains("AI-driven diagram creation"));
+    assert!(!stdout.contains("MCP filesystem server via npx"));
 }
 
 #[test]
@@ -636,6 +825,18 @@ fn provider_use_no_name_noninteractive_fails() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Provider name required"));
+}
+
+#[test]
+fn mcp_install_no_name_noninteractive_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["mcp", "install"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("MCP name required"));
 }
 
 fn write_fake_cli(bin_dir: &Path, name: &str, version_output: &str) {

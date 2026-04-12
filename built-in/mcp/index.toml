@@ -1,0 +1,29 @@
+# Built-in MCP presets shipped with arc-kit (read-only). User definitions in ~/.arc-cli/mcps/registry.toml override same name.
+
+[[mcps]]
+name = "filesystem"
+description = "MCP filesystem server via npx (@modelcontextprotocol/server-filesystem)"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem"]
+
+[[mcps]]
+name = "drawio"
+description = "AI-driven diagram creation via npx (@next-ai-drawio/mcp-server)"
+transport = "stdio"
+command = "npx"
+args = ["@next-ai-drawio/mcp-server@latest"]
+
+[[mcps]]
+name = "sequential-thinking"
+description = "Structured sequential reasoning via npx (@modelcontextprotocol/server-sequential-thinking)"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+
+[[mcps]]
+name = "zhipu-web-search"
+description = "Zhipu web search MCP for real-time network search and web retrieval"
+transport = "streamable_http"
+url = "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp"
+headers = { Authorization = "${AUTHORIZATION_ZHIPU_WEB_SEARCH}" }

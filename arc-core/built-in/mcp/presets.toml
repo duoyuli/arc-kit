@@ -1,8 +1,0 @@
-# Built-in MCP presets shipped with arc-kit (read-only). User definitions in ~/.arc-cli/mcps/registry.toml override same name.
-
-[[mcps]]
-name = "filesystem"
-description = "MCP filesystem server via npx (@modelcontextprotocol/server-filesystem)"
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem"]

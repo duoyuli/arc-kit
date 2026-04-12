@@ -7,11 +7,10 @@ use arc_core::error::ArcError;
 use arc_core::provider::test::test_provider;
 use arc_core::provider::{
     ProviderInfo, apply_provider, build_provider_list_lines, load_providers_for_agent,
-    print_provider_list_lines_stdout, read_active_provider, supported_provider_agents,
-    supports_provider_agent,
+    read_active_provider, supported_provider_agents, supports_provider_agent,
 };
 use arc_tui::select_provider;
-use console::style;
+use console::{Alignment, pad_str, style};
 
 use crate::cli::{OutputFormat, ProviderCommand};
 use crate::display::agent_display_name;
@@ -94,6 +93,33 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
         println!("  {}", style("No providers configured.").yellow());
     }
     Ok(())
+}
+
+fn print_provider_list_lines_stdout(lines: &[arc_core::provider::ProviderListLine]) {
+    for line in lines {
+        match line {
+            arc_core::provider::ProviderListLine::AgentHeader { agent_display } => {
+                println!();
+                println!("  {}", style(agent_display).bold());
+            }
+            arc_core::provider::ProviderListLine::ProviderRow {
+                is_active,
+                display_name,
+                description,
+                name_width,
+                ..
+            } => {
+                let marker = if *is_active { "✓" } else { " " };
+                if description.is_empty() {
+                    println!("    {marker} {}", display_name);
+                } else {
+                    let padded = pad_str(display_name, *name_width, Alignment::Left, None);
+                    println!("    {marker} {padded}  {}", style(description).dim());
+                }
+            }
+        }
+    }
+    println!();
 }
 
 fn use_provider(
