@@ -8,7 +8,7 @@ use arc_core::status::{
 
 // ── Schema version ────────────────────────────────────────
 // Bump when a breaking change is made to any JSON schema.
-pub const SCHEMA_VERSION: &str = "4";
+pub const SCHEMA_VERSION: &str = "5";
 
 // ── status ────────────────────────────────────────────────
 
@@ -62,6 +62,8 @@ pub struct McpListOutput {
 #[derive(Serialize)]
 pub struct McpItem {
     pub name: String,
+    /// "builtin" or "user"
+    pub origin: String,
     pub transport: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -98,6 +100,7 @@ pub struct SubagentListOutput {
 #[derive(Serialize)]
 pub struct SubagentItem {
     pub name: String,
+    pub origin: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,6 +112,7 @@ pub struct SubagentItem {
 pub struct SubagentInfoOutput {
     pub schema_version: &'static str,
     pub name: String,
+    pub origin: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

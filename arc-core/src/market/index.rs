@@ -9,31 +9,10 @@ use crate::models::MarketSource;
 use crate::paths::ArcPaths;
 
 pub const DEFAULT_BUILTIN_MANIFEST_URL: &str =
-    "https://raw.githubusercontent.com/duoyuli/arc-kit/main/built-in/manifest.toml";
-pub const BUILTIN_MANIFEST_URL_ENV: &str = "ARC_KIT_BUILTIN_MANIFEST_URL";
+    "https://raw.githubusercontent.com/duoyuli/arc-kit/main/built-in/market/index.toml";
+pub const BUILTIN_MANIFEST_URL_ENV: &str = "ARC_KIT_BUILTIN_MARKET_INDEX_URL";
 
-const EMBEDDED_BUILTIN_MANIFEST: &str = include_str!("../../../built-in/manifest.toml");
 const EMBEDDED_MARKET_INDEX: &str = include_str!("../../../built-in/market/index.toml");
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuiltinManifestDocument {
-    #[serde(default = "default_version")]
-    pub version: u32,
-    #[serde(default)]
-    pub index: BuiltinIndexSection,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct BuiltinIndexSection {
-    #[serde(default)]
-    pub market: BuiltinIndexEntry,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuiltinIndexEntry {
-    #[serde(default = "default_market_index_path")]
-    pub path: String,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketIndexDocument {
@@ -55,23 +34,6 @@ pub struct MarketIndexRepo {
 #[derive(Debug, Clone)]
 pub struct MarketIndexStore {
     paths: ArcPaths,
-}
-
-impl Default for BuiltinManifestDocument {
-    fn default() -> Self {
-        Self {
-            version: default_version(),
-            index: BuiltinIndexSection::default(),
-        }
-    }
-}
-
-impl Default for BuiltinIndexEntry {
-    fn default() -> Self {
-        Self {
-            path: default_market_index_path(),
-        }
-    }
 }
 
 impl Default for MarketIndexDocument {
@@ -136,10 +98,7 @@ impl MarketIndexStore {
     }
 
     pub fn refresh_from_manifest_url(&self, url: &str) -> Result<MarketIndexDocument> {
-        let manifest_raw = fetch_text(url)?;
-        let manifest = parse_builtin_manifest(&manifest_raw)?;
-        let market_index_url = resolve_relative_location(url, &manifest.index.market.path)?;
-        let market_raw = fetch_text(&market_index_url)?;
+        let market_raw = fetch_text(url)?;
         let document = parse_market_index(&market_raw)?;
         self.write_cache(&market_raw)?;
         Ok(document)
@@ -156,12 +115,7 @@ impl MarketIndexStore {
     }
 
     fn load_embedded(&self) -> MarketIndexDocument {
-        let manifest = parse_builtin_manifest(EMBEDDED_BUILTIN_MANIFEST).unwrap_or_default();
-        if manifest.index.market.path == default_market_index_path() {
-            parse_market_index(EMBEDDED_MARKET_INDEX).unwrap_or_default()
-        } else {
-            MarketIndexDocument::default()
-        }
+        parse_market_index(EMBEDDED_MARKET_INDEX).unwrap_or_default()
     }
 }
 
@@ -173,20 +127,11 @@ fn default_parser() -> String {
     "auto".to_string()
 }
 
-fn default_market_index_path() -> String {
-    "market/index.toml".to_string()
-}
-
 fn builtin_manifest_url() -> String {
     std::env::var(BUILTIN_MANIFEST_URL_ENV)
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_BUILTIN_MANIFEST_URL.to_string())
-}
-
-fn parse_builtin_manifest(raw: &str) -> Result<BuiltinManifestDocument> {
-    toml::from_str(raw)
-        .map_err(|err| ArcError::new(format!("failed to parse built-in manifest: {err}")))
 }
 
 fn parse_market_index(raw: &str) -> Result<MarketIndexDocument> {
@@ -205,32 +150,6 @@ fn fetch_text(url: &str) -> Result<String> {
     response
         .into_string()
         .map_err(|err| ArcError::new(format!("failed to read built-in response: {err}")))
-}
-
-fn resolve_relative_location(base: &str, relative: &str) -> Result<String> {
-    if relative.starts_with("http://")
-        || relative.starts_with("https://")
-        || relative.starts_with("file://")
-    {
-        return Ok(relative.to_string());
-    }
-
-    if let Some(path) = base.strip_prefix("file://") {
-        let base_path = std::path::Path::new(path);
-        let Some(parent) = base_path.parent() else {
-            return Err(ArcError::new(format!(
-                "failed to resolve built-in path from manifest: {base}"
-            )));
-        };
-        return Ok(format!("file://{}", parent.join(relative).display()));
-    }
-
-    let Some((prefix, _)) = base.rsplit_once('/') else {
-        return Err(ArcError::new(format!(
-            "failed to resolve built-in URL from manifest: {base}"
-        )));
-    };
-    Ok(format!("{prefix}/{relative}"))
 }
 
 fn market_source_id(git_url: &str) -> String {

@@ -5,7 +5,7 @@ pub mod test;
 
 pub use list_lines::{
     ProviderListLine, build_provider_list_lines, default_provider_list_row,
-    format_provider_list_line_plain, print_provider_list_lines_stdout, provider_list_line_mapping,
+    format_provider_list_line_plain, provider_list_line_mapping,
 };
 
 use std::collections::BTreeMap;

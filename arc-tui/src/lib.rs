@@ -3,6 +3,7 @@ mod fuzzy;
 mod install;
 mod provider;
 mod skill;
+mod subagent;
 mod theme;
 
 use console::style;
@@ -15,6 +16,7 @@ pub use skill::{
     run_skill_browser, run_skill_install_wizard, run_skill_require_pick_wizard,
     run_skill_require_pick_wizard_with_defaults, run_skill_uninstall_wizard,
 };
+pub use subagent::run_subagent_install_wizard;
 
 /// Simple yes/no confirmation prompt. Returns the user's choice.
 pub fn confirm(prompt: &str, default: bool) -> std::io::Result<bool> {

@@ -8,12 +8,14 @@ pub mod error;
 pub mod git;
 pub mod io;
 pub mod market;
+pub mod mcp_registry;
 pub mod models;
 pub mod paths;
 pub mod project;
 pub mod provider;
 pub mod skill;
 pub mod status;
+pub mod subagent_registry;
 
 // Re-exports for convenience.
 // Prefer module-scoped access (e.g. `arc_core::models::SkillEntry`) for new code;

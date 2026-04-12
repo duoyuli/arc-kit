@@ -6,11 +6,11 @@ use include_dir::{Dir, include_dir};
 use crate::market::scanner::extract_skill_summary;
 use crate::models::{SkillEntry, SkillOrigin};
 
-static BUILTIN_SKILLS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../built-in/skills");
+static BUILTIN_SKILL_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../built-in/skill");
 
 pub fn list_builtin_skills(cache_dir: &Path) -> Vec<SkillEntry> {
     let mut entries = Vec::new();
-    for dir in BUILTIN_SKILLS_DIR.dirs() {
+    for dir in BUILTIN_SKILL_DIR.dirs() {
         let name = dir
             .path()
             .file_name()
@@ -48,7 +48,7 @@ pub fn list_builtin_skills(cache_dir: &Path) -> Vec<SkillEntry> {
 /// Extract the cached built-in skill files to `cache_dir/<name>/`.
 /// Returns the destination path on success.
 pub fn materialize(cache_dir: &Path, name: &str) -> std::io::Result<std::path::PathBuf> {
-    let Some(dir) = BUILTIN_SKILLS_DIR.get_dir(name) else {
+    let Some(dir) = BUILTIN_SKILL_DIR.get_dir(name) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("built-in skill '{name}' not found"),

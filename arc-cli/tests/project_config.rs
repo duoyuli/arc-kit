@@ -11,23 +11,20 @@ fn arc_cmd() -> Command {
 fn arc_cmd_with_home(home: &Path) -> Command {
     let mut cmd = arc_cmd();
     cmd.env("ARC_KIT_USER_HOME", home);
-    cmd.env("ARC_KIT_BUILTIN_MANIFEST_URL", empty_builtin_manifest(home));
+    cmd.env(
+        "ARC_KIT_BUILTIN_MARKET_INDEX_URL",
+        empty_builtin_market_index(home),
+    );
     cmd
 }
 
-fn empty_builtin_manifest(home: &Path) -> String {
+fn empty_builtin_market_index(home: &Path) -> String {
     let builtin_dir = home.join("built-in");
     let market_dir = builtin_dir.join("market");
-    let manifest = builtin_dir.join("manifest.toml");
     let index = market_dir.join("index.toml");
     fs::create_dir_all(&market_dir).unwrap();
-    fs::write(
-        &manifest,
-        "version = 1\n\n[index.market]\npath = \"market/index.toml\"\n",
-    )
-    .unwrap();
     fs::write(&index, "version = 1\nupdated_at = \"2026-04-09\"\n").unwrap();
-    format!("file://{}", manifest.display())
+    format!("file://{}", index.display())
 }
 
 // ── arc project apply ───────────────────────────────────────────
@@ -46,7 +43,7 @@ fn arc_project_apply_json_noninteractive_no_arc_toml() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert_eq!(json["schema_version"], "4");
+    assert_eq!(json["schema_version"], "5");
     assert_eq!(json["ok"], false);
 }
 
@@ -369,11 +366,31 @@ fn arc_status_json_exposes_project_agents_and_catalog_modules() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert_eq!(json["schema_version"], "4");
+    assert_eq!(json["schema_version"], "5");
     assert_eq!(json["project"]["state"], "active");
     assert!(json.get("agents").is_some());
     assert!(json.get("catalog").is_some());
     assert!(json.get("actions").is_some());
+}
+
+#[test]
+fn arc_status_json_does_not_report_builtin_presets_as_installed_mcps() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+
+    fs::write(proj.path().join("arc.toml"), "[skills]\nrequire = []\n").unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["status", "--format", "json"])
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["schema_version"], "5");
+    assert_eq!(json["mcps"], serde_json::json!([]));
 }
 
 #[test]
@@ -565,13 +582,13 @@ fn arc_project_apply_skips_global_only_mcp_without_fallback() {
     let proj = tempfile::tempdir().unwrap();
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
-    write_fake_cli(&bin_dir, "openclaw", "openclaw 1.0.0");
+    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
     fs::write(
         proj.path().join("arc.toml"),
         r#"
 [[mcps]]
 name = "github"
-targets = ["openclaw"]
+targets = ["kimi"]
 transport = "streamable_http"
 url = "https://api.github.com/mcp"
 "#,
@@ -603,15 +620,10 @@ url = "https://api.github.com/mcp"
         .find(|item| item["resource_kind"] == "mcp")
         .cloned()
         .expect("mcp item");
-    assert_eq!(item["agent"], "openclaw");
+    assert_eq!(item["agent"], "kimi");
     assert_eq!(item["status"], "skipped");
     assert_eq!(item["reason"], "requires_global_fallback");
-    assert!(
-        !temp
-            .path()
-            .join(".openclaw/workspace/config/mcporter.json")
-            .exists()
-    );
+    assert!(!temp.path().join(".kimi/mcp.json").exists());
 }
 
 #[test]
@@ -620,13 +632,13 @@ fn arc_project_apply_allows_global_fallback_for_mcp() {
     let proj = tempfile::tempdir().unwrap();
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
-    write_fake_cli(&bin_dir, "openclaw", "openclaw 1.0.0");
+    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
     fs::write(
         proj.path().join("arc.toml"),
         r#"
 [[mcps]]
 name = "github"
-targets = ["openclaw"]
+targets = ["kimi"]
 transport = "streamable_http"
 url = "https://api.github.com/mcp"
 "#,
@@ -663,11 +675,11 @@ url = "https://api.github.com/mcp"
         .find(|item| item["resource_kind"] == "mcp")
         .cloned()
         .expect("mcp item");
-    assert_eq!(item["agent"], "openclaw");
+    assert_eq!(item["agent"], "kimi");
     assert_eq!(item["status"], "applied");
     assert_eq!(item["applied_scope"], "global");
 
-    let config_path = temp.path().join(".openclaw/workspace/config/mcporter.json");
+    let config_path = temp.path().join(".kimi/mcp.json");
     assert!(config_path.exists());
     let body = fs::read_to_string(config_path).unwrap();
     assert!(body.contains("\"mcpServers\""));
@@ -680,7 +692,7 @@ fn arc_project_apply_reports_failed_mcp_conflict_in_json() {
     let proj = tempfile::tempdir().unwrap();
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
-    write_fake_cli(&bin_dir, "openclaw", "openclaw 1.0.0");
+    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
 
     let install = arc_cmd_with_home(temp.path())
         .args([
@@ -688,7 +700,7 @@ fn arc_project_apply_reports_failed_mcp_conflict_in_json() {
             "install",
             "github",
             "--agent",
-            "openclaw",
+            "kimi",
             "--transport",
             "streamable-http",
             "--url",
@@ -711,7 +723,7 @@ fn arc_project_apply_reports_failed_mcp_conflict_in_json() {
         r#"
 [[mcps]]
 name = "github"
-targets = ["openclaw"]
+targets = ["kimi"]
 transport = "streamable_http"
 url = "https://api.github.com/mcp"
 scope_fallback = "global"
@@ -744,9 +756,90 @@ scope_fallback = "global"
         .find(|item| item["resource_kind"] == "mcp")
         .cloned()
         .expect("mcp item");
-    assert_eq!(item["agent"], "openclaw");
+    assert_eq!(item["agent"], "kimi");
     assert_eq!(item["status"], "failed");
     assert_eq!(item["reason"], "name_conflict_with_global");
+}
+
+#[test]
+fn arc_project_apply_writes_opencode_project_mcp_to_opencode_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_cli(&bin_dir, "opencode", "opencode 1.0.0");
+    fs::write(
+        proj.path().join("arc.toml"),
+        r#"
+[[mcps]]
+name = "filesystem"
+targets = ["opencode"]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem"]
+"#,
+    )
+    .unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["project", "apply", "--format", "json"])
+        .env(
+            "PATH",
+            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(proj.path().join("opencode.json").exists());
+    assert!(!proj.path().join(".opencode/settings.json").exists());
+}
+
+#[test]
+fn arc_project_apply_skips_kimi_without_global_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
+    fs::write(
+        proj.path().join("arc.toml"),
+        r#"
+[[mcps]]
+name = "web"
+targets = ["kimi"]
+transport = "streamable_http"
+url = "https://example.com/mcp"
+"#,
+    )
+    .unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["project", "apply", "--format", "json"])
+        .env(
+            "PATH",
+            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout).unwrap();
+    let item = json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["resource_kind"] == "mcp")
+        .cloned()
+        .expect("mcp item");
+    assert_eq!(item["agent"], "kimi");
+    assert_eq!(item["status"], "skipped");
+    assert_eq!(item["reason"], "requires_global_fallback");
 }
 
 #[test]
@@ -770,6 +863,7 @@ command = "npx"
 
 [[subagents]]
 name = "reviewer"
+description = "Repository reviewer"
 targets = ["claude", "codex"]
 prompt_file = "reviewer.md"
 "#,
@@ -800,6 +894,7 @@ command = "npx"
 
 [[subagents]]
 name = "reviewer"
+description = "Repository reviewer"
 targets = ["claude"]
 prompt_file = "reviewer.md"
 "#,
@@ -843,14 +938,14 @@ fn arc_status_reflects_existing_project_global_fallback_install() {
     let proj = tempfile::tempdir().unwrap();
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
-    write_fake_cli(&bin_dir, "openclaw", "openclaw 1.0.0");
+    write_fake_cli(&bin_dir, "kimi", "kimi 1.0.0");
 
     fs::write(
         proj.path().join("arc.toml"),
         r#"
 [[mcps]]
 name = "github"
-targets = ["openclaw"]
+targets = ["kimi"]
 transport = "streamable_http"
 url = "https://api.github.com/mcp"
 "#,
@@ -902,7 +997,7 @@ url = "https://api.github.com/mcp"
         .first()
         .cloned()
         .unwrap();
-    assert_eq!(target["agent"], "openclaw");
+    assert_eq!(target["agent"], "kimi");
     assert_eq!(target["status"], "applied");
     assert_eq!(target["applied_scope"], "global");
 }

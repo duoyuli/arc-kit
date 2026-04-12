@@ -8,13 +8,14 @@ use crate::capability::{
     AppliedScope, CapabilityStatusEntry, CapabilityTargetState, CapabilityTargetStatus,
     DesiredScope, McpApplyPlan, ResourceResolution, SourceScope, SubagentApplyPlan,
     TrackedCapabilityInstall, capability_install_present, list_tracked_capability_installs,
-    load_global_mcps, load_global_subagents, preview_mcp_plan, preview_subagent_plan,
-    resolve_declared_targets, tracking_record_for_target, validate_mcp_definition,
-    validate_subagent_definition,
+    load_global_subagents, preview_mcp_plan, preview_subagent_plan, resolve_declared_targets,
+    tracking_record_for_target, validate_mcp_definition, validate_subagent_definition,
+    validate_subagent_targets,
 };
 use crate::detect::DetectCache;
 use crate::engine::{InstallEngine, InstalledResource};
 use crate::market::sources::MarketSourceRegistry;
+use crate::mcp_registry::load_user_registry_mcps;
 use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
 use crate::project::{find_project_config, load_project_config};
@@ -524,7 +525,7 @@ fn collect_capabilities(
         .unwrap_or_default();
 
     let mut mcps = Vec::new();
-    match load_global_mcps(paths) {
+    match load_user_registry_mcps(paths) {
         Ok(global_mcps) => {
             for definition in global_mcps {
                 let plan = McpApplyPlan {
@@ -734,30 +735,39 @@ fn collect_project_subagent_entries(
         let targets =
             match validate_subagent_definition(&mut definition, SourceScope::Project, project_root)
             {
-                Ok(prompt_path) => {
-                    let plan = SubagentApplyPlan {
-                        prompt_path,
-                        definition: definition.clone(),
-                        source_scope: SourceScope::Project,
-                    };
-                    let preview = preview_subagent_plan(paths, cache, &plan, Some(project_root))
-                        .unwrap_or_else(|err| {
-                            invalid_capability_targets(
-                                cache,
-                                definition.targets.as_ref(),
-                                DesiredScope::Project,
-                                err.message,
-                            )
-                        });
-                    observe_capability_targets(
-                        paths,
-                        ResourceKind::SubAgent,
-                        &definition.name,
-                        SourceScope::Project,
-                        Some(project_root),
-                        preview,
-                    )
-                }
+                Ok(prompt_path) => match validate_subagent_targets(cache, &definition) {
+                    Ok(_) => {
+                        let plan = SubagentApplyPlan {
+                            prompt_path,
+                            definition: definition.clone(),
+                            source_scope: SourceScope::Project,
+                        };
+                        let preview =
+                            preview_subagent_plan(paths, cache, &plan, Some(project_root))
+                                .unwrap_or_else(|err| {
+                                    invalid_capability_targets(
+                                        cache,
+                                        definition.targets.as_ref(),
+                                        DesiredScope::Project,
+                                        err.message,
+                                    )
+                                });
+                        observe_capability_targets(
+                            paths,
+                            ResourceKind::SubAgent,
+                            &definition.name,
+                            SourceScope::Project,
+                            Some(project_root),
+                            preview,
+                        )
+                    }
+                    Err(err) => invalid_capability_targets(
+                        cache,
+                        definition.targets.as_ref(),
+                        DesiredScope::Project,
+                        err.message,
+                    ),
+                },
                 Err(err) => invalid_capability_targets(
                     cache,
                     definition.targets.as_ref(),

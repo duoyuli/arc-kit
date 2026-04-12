@@ -54,9 +54,12 @@ pub enum SubagentFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpConfigFormat {
-    JsonMapMcpServers,
+    JsonMapTypedMcpServers,
+    JsonMapPlainMcpServers,
+    JsonMapGeminiMcpServers,
+    JsonMapKimiMcpServers,
     JsonOpenCode,
-    TomlMcpServers,
+    TomlCodexMcpServers,
 }
 
 #[derive(Debug, Clone)]
@@ -102,11 +105,11 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
             mcp_scope_support: McpScopeSupport::ProjectNative,
             mcp_transport_support: McpTransportSupport {
                 supports_stdio: true,
-                supports_sse: true,
+                supports_sse: false,
                 supports_streamable_http: true,
             },
             subagent_support: SubagentSupport::Native,
-            mcp_config_format: Some(McpConfigFormat::JsonMapMcpServers),
+            mcp_config_format: Some(McpConfigFormat::JsonMapTypedMcpServers),
             mcp_global_config_parts: &[".claude.json"],
             mcp_project_config_parts: &[".mcp.json"],
             subagent_global_dir_parts: &[".claude", "agents"],
@@ -130,10 +133,10 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
             mcp_transport_support: McpTransportSupport {
                 supports_stdio: true,
                 supports_sse: false,
-                supports_streamable_http: false,
+                supports_streamable_http: true,
             },
             subagent_support: SubagentSupport::Native,
-            mcp_config_format: Some(McpConfigFormat::TomlMcpServers),
+            mcp_config_format: Some(McpConfigFormat::TomlCodexMcpServers),
             mcp_global_config_parts: &[".codex", "config.toml"],
             mcp_project_config_parts: &[".codex", "config.toml"],
             subagent_global_dir_parts: &[".codex", "agents"],
@@ -153,15 +156,15 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
             project_skills_parts: &[],
             provider_kind: None,
             provider_seed: None,
-            mcp_scope_support: McpScopeSupport::GlobalOnly,
+            mcp_scope_support: McpScopeSupport::Unsupported,
             mcp_transport_support: McpTransportSupport {
-                supports_stdio: true,
-                supports_sse: true,
-                supports_streamable_http: true,
+                supports_stdio: false,
+                supports_sse: false,
+                supports_streamable_http: false,
             },
             subagent_support: SubagentSupport::Unsupported,
-            mcp_config_format: Some(McpConfigFormat::JsonMapMcpServers),
-            mcp_global_config_parts: &[".openclaw", "workspace", "config", "mcporter.json"],
+            mcp_config_format: None,
+            mcp_global_config_parts: &[],
             mcp_project_config_parts: &[],
             subagent_global_dir_parts: &[],
             subagent_project_dir_parts: &[],
@@ -187,7 +190,7 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
                 supports_streamable_http: true,
             },
             subagent_support: SubagentSupport::Unsupported,
-            mcp_config_format: Some(McpConfigFormat::JsonMapMcpServers),
+            mcp_config_format: Some(McpConfigFormat::JsonMapPlainMcpServers),
             mcp_global_config_parts: &[".cursor", "mcp.json"],
             mcp_project_config_parts: &[".cursor", "mcp.json"],
             subagent_global_dir_parts: &[],
@@ -216,7 +219,7 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
             subagent_support: SubagentSupport::Native,
             mcp_config_format: Some(McpConfigFormat::JsonOpenCode),
             mcp_global_config_parts: &[".config", "opencode", "opencode.json"],
-            mcp_project_config_parts: &[".opencode", "settings.json"],
+            mcp_project_config_parts: &["opencode.json"],
             subagent_global_dir_parts: &[".config", "opencode", "agents"],
             subagent_project_dir_parts: &[".opencode", "agents"],
             subagent_format: Some(SubagentFormat::MarkdownFrontmatter),
@@ -241,7 +244,7 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
                 supports_streamable_http: true,
             },
             subagent_support: SubagentSupport::Unsupported,
-            mcp_config_format: Some(McpConfigFormat::JsonMapMcpServers),
+            mcp_config_format: Some(McpConfigFormat::JsonMapGeminiMcpServers),
             mcp_global_config_parts: &[".gemini", "settings.json"],
             mcp_project_config_parts: &[".gemini", "settings.json"],
             subagent_global_dir_parts: &[],
@@ -261,16 +264,16 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
             project_skills_parts: &[".kimi", "skills"],
             provider_kind: None,
             provider_seed: None,
-            mcp_scope_support: McpScopeSupport::ProjectNative,
+            mcp_scope_support: McpScopeSupport::GlobalOnly,
             mcp_transport_support: McpTransportSupport {
                 supports_stdio: true,
-                supports_sse: true,
+                supports_sse: false,
                 supports_streamable_http: true,
             },
             subagent_support: SubagentSupport::Unsupported,
-            mcp_config_format: Some(McpConfigFormat::JsonMapMcpServers),
+            mcp_config_format: Some(McpConfigFormat::JsonMapKimiMcpServers),
             mcp_global_config_parts: &[".kimi", "mcp.json"],
-            mcp_project_config_parts: &[".kimi", "mcp.json"],
+            mcp_project_config_parts: &[],
             subagent_global_dir_parts: &[],
             subagent_project_dir_parts: &[],
             subagent_format: None,
@@ -348,7 +351,14 @@ pub fn agent_mcp_path(
     }
     let mut path = match scope {
         AppliedResourceScope::Global | AppliedResourceScope::GlobalFallback => {
-            paths.user_home().to_path_buf()
+            if agent_id == "kimi" {
+                return Some(kimi_global_mcp_path(
+                    std::env::var_os("KIMI_SHARE_DIR").map(PathBuf::from),
+                    paths.user_home(),
+                ));
+            } else {
+                paths.user_home().to_path_buf()
+            }
         }
         AppliedResourceScope::Project => project_root?.to_path_buf(),
     };
@@ -356,6 +366,13 @@ pub fn agent_mcp_path(
         path = path.join(part);
     }
     Some(path)
+}
+
+fn kimi_global_mcp_path(kimi_share_dir: Option<PathBuf>, user_home: &Path) -> PathBuf {
+    if let Some(dir) = kimi_share_dir {
+        return dir.join("mcp.json");
+    }
+    user_home.join(".kimi").join("mcp.json")
 }
 
 pub fn agent_subagent_dir(
@@ -384,4 +401,53 @@ pub fn agent_subagent_dir(
         path = path.join(part);
     }
     Some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_project_mcp_path_is_project_root_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = ArcPaths::with_user_home(temp.path().join("home"));
+        let project = temp.path().join("repo");
+        let path = agent_mcp_path(
+            &paths,
+            "opencode",
+            AppliedResourceScope::Project,
+            Some(&project),
+        )
+        .unwrap();
+        assert_eq!(path, project.join("opencode.json"));
+    }
+
+    #[test]
+    fn kimi_global_mcp_path_respects_share_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let kimi_share = temp.path().join("kimi-share");
+        let path =
+            kimi_global_mcp_path(Some(kimi_share.clone()), temp.path().join("home").as_path());
+        assert_eq!(path, kimi_share.join("mcp.json"));
+    }
+
+    #[test]
+    fn kimi_global_mcp_path_defaults_to_user_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let user_home = temp.path().join("home");
+        let path = kimi_global_mcp_path(None, &user_home);
+        assert_eq!(path, user_home.join(".kimi").join("mcp.json"));
+    }
+
+    #[test]
+    fn openclaw_has_no_mcp_support_in_arc() {
+        let owl = agent_spec("openclaw").unwrap();
+        assert!(matches!(
+            owl.mcp_scope_support,
+            McpScopeSupport::Unsupported
+        ));
+        assert!(owl.mcp_config_format.is_none());
+        assert!(owl.mcp_global_config_parts.is_empty());
+        assert!(owl.mcp_project_config_parts.is_empty());
+    }
 }

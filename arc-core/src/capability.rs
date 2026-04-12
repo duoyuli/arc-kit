@@ -14,15 +14,31 @@ use crate::agent::{
 };
 use crate::detect::DetectCache;
 use crate::error::{ArcError, Result};
+use crate::mcp_registry;
 use crate::models::ResourceKind;
 use crate::paths::{ArcPaths, expand_user_path};
+use crate::subagent_registry;
 
 static RESOURCE_NAME_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9-_]{0,63}$").expect("valid resource regex"));
 static ENV_PLACEHOLDER_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\$\{[A-Z0-9_]+\}$").expect("valid env regex"));
+static ENV_DOLLAR_PLACEHOLDER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\$[A-Z0-9_]+$").expect("valid env dollar regex"));
+static ENV_PROVIDER_PLACEHOLDER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\$\{env:[A-Z0-9_]+\}$").expect("valid env provider regex"));
+static ENV_OPENCODE_PLACEHOLDER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\{env:[A-Z0-9_]+\}$").expect("valid opencode env regex"));
 static AUTH_PLACEHOLDER_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^(Bearer|Basic)\s+\$\{[A-Z0-9_]+\}$").expect("valid auth env regex"));
+static AUTH_DOLLAR_PLACEHOLDER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^(Bearer|Basic)\s+\$[A-Z0-9_]+$").expect("valid auth dollar regex"));
+static AUTH_PROVIDER_PLACEHOLDER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^(Bearer|Basic)\s+\$\{env:[A-Z0-9_]+\}$").expect("valid auth provider regex")
+});
+static AUTH_OPENCODE_PLACEHOLDER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^(Bearer|Basic)\s+\{env:[A-Z0-9_]+\}$").expect("valid auth opencode regex")
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,13 +114,57 @@ pub struct McpDefinition {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout_sec: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_timeout_sec: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<McpOAuthConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_fallback: Option<ScopeFallback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpOAuthConfig {
+    Disabled(bool),
+    Settings(McpOAuthSettings),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct McpOAuthSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_server_metadata_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,24 +348,29 @@ pub fn validate_subagent_definition(
     Ok(prompt_path)
 }
 
-pub fn load_global_mcps(paths: &ArcPaths) -> Result<Vec<McpDefinition>> {
-    let mut entries = Vec::new();
-    let dir = paths.mcps_dir();
-    let Ok(items) = fs::read_dir(&dir) else {
-        return Ok(entries);
-    };
-    for item in items.flatten() {
-        let path = item.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
-            continue;
-        }
-        let body = fs::read_to_string(&path)
-            .map_err(|e| ArcError::new(format!("failed to read {}: {e}", path.display())))?;
-        let mut definition: McpDefinition = toml::from_str(&body)
-            .map_err(|e| ArcError::new(format!("failed to parse {}: {e}", path.display())))?;
-        validate_mcp_definition(&mut definition, SourceScope::Global)?;
-        entries.push(definition);
+pub fn validate_subagent_targets(
+    cache: &DetectCache,
+    definition: &SubagentDefinition,
+) -> Result<Vec<String>> {
+    let targets = resolve_declared_targets(cache, definition.targets.as_ref());
+    if targets.iter().any(|agent| agent == "codex")
+        && definition
+            .description
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
+        return Err(ArcError::new(
+            "description_required: codex subagents require a non-empty description",
+        ));
     }
+    Ok(targets)
+}
+
+pub fn load_global_mcps(paths: &ArcPaths) -> Result<Vec<McpDefinition>> {
+    let catalog = mcp_registry::load_merged_mcp_catalog(paths)?;
+    let mut entries: Vec<McpDefinition> = catalog.into_iter().map(|e| e.definition).collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
 }
@@ -313,58 +378,29 @@ pub fn load_global_mcps(paths: &ArcPaths) -> Result<Vec<McpDefinition>> {
 pub fn save_global_mcp(paths: &ArcPaths, definition: &McpDefinition) -> Result<()> {
     let mut normalized = definition.clone();
     validate_mcp_definition(&mut normalized, SourceScope::Global)?;
-    let path = paths.mcps_dir().join(format!("{}.toml", normalized.name));
-    let body = toml::to_string_pretty(&normalized).map_err(|e| {
-        ArcError::new(format!(
-            "failed to serialize mcp '{}': {e}",
-            normalized.name
-        ))
-    })?;
-    fs::write(&path, body)
-        .map_err(|e| ArcError::new(format!("failed to write {}: {e}", path.display())))?;
-    Ok(())
+    mcp_registry::upsert_user_registry_mcp(paths, &normalized)
 }
 
 pub fn remove_global_mcp(paths: &ArcPaths, name: &str) -> Result<()> {
-    let path = paths.mcps_dir().join(format!("{name}.toml"));
-    if !path.exists() {
-        return Ok(());
-    }
-    fs::remove_file(&path)
-        .map_err(|e| ArcError::new(format!("failed to remove {}: {e}", path.display())))?;
+    let _ = mcp_registry::remove_user_registry_mcp(paths, name)?;
     Ok(())
 }
 
 pub fn load_global_subagents(paths: &ArcPaths) -> Result<Vec<SubagentDefinition>> {
-    let mut entries = Vec::new();
-    let dir = paths.subagents_dir();
-    let Ok(items) = fs::read_dir(&dir) else {
-        return Ok(entries);
-    };
-    for item in items.flatten() {
-        let path = item.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
-            continue;
-        }
-        let body = fs::read_to_string(&path)
-            .map_err(|e| ArcError::new(format!("failed to read {}: {e}", path.display())))?;
-        let mut definition: SubagentDefinition = toml::from_str(&body)
-            .map_err(|e| ArcError::new(format!("failed to parse {}: {e}", path.display())))?;
-        let prompt_path = paths
-            .subagents_dir()
-            .join(format!("{}.md", definition.name));
-        definition.prompt_file = prompt_path.display().to_string();
-        validate_subagent_definition(&mut definition, SourceScope::Global, paths.home())?;
-        entries.push(definition);
-    }
+    let mut entries: Vec<SubagentDefinition> =
+        subagent_registry::load_merged_subagent_catalog(paths)?
+            .into_iter()
+            .map(|entry| entry.definition)
+            .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
 }
 
 pub fn load_global_subagent_prompt(paths: &ArcPaths, name: &str) -> Result<String> {
-    let prompt_path = paths.subagents_dir().join(format!("{name}.md"));
-    fs::read_to_string(&prompt_path)
-        .map_err(|e| ArcError::new(format!("failed to read {}: {e}", prompt_path.display())))
+    let Some(entry) = subagent_registry::find_global_subagent(paths, name)? else {
+        return Err(ArcError::new(format!("subagent '{name}' not found")));
+    };
+    Ok(entry.prompt_body)
 }
 
 pub fn save_global_subagent(
@@ -804,6 +840,27 @@ fn evaluate_subagent_target(
             reason: Some("unsupported_subagent".to_string()),
         });
     }
+    if spec.id == "codex"
+        && plan
+            .definition
+            .description
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
+        return Ok(CapabilityTargetStatus {
+            agent: agent.to_string(),
+            status: CapabilityTargetState::Failed,
+            desired_scope: if plan.source_scope == SourceScope::Project {
+                DesiredScope::Project
+            } else {
+                DesiredScope::Global
+            },
+            applied_scope: AppliedScope::None,
+            reason: Some("description_required".to_string()),
+        });
+    }
     let applied_scope = if plan.source_scope == SourceScope::Project {
         AppliedResourceScope::Project
     } else {
@@ -848,11 +905,32 @@ fn write_agent_mcp(
         )));
     };
     match spec.mcp_config_format {
-        Some(McpConfigFormat::JsonMapMcpServers) => {
-            upsert_json_map_mcp(&path, "mcpServers", definition)
-        }
+        Some(McpConfigFormat::JsonMapTypedMcpServers) => upsert_json_map_mcp(
+            &path,
+            "mcpServers",
+            &definition.name,
+            json_typed_mcp_value(definition),
+        ),
+        Some(McpConfigFormat::JsonMapPlainMcpServers) => upsert_json_map_mcp(
+            &path,
+            "mcpServers",
+            &definition.name,
+            json_plain_mcp_value(definition),
+        ),
+        Some(McpConfigFormat::JsonMapGeminiMcpServers) => upsert_json_map_mcp(
+            &path,
+            "mcpServers",
+            &definition.name,
+            gemini_mcp_value(definition),
+        ),
+        Some(McpConfigFormat::JsonMapKimiMcpServers) => upsert_json_map_mcp(
+            &path,
+            "mcpServers",
+            &definition.name,
+            kimi_mcp_value(definition),
+        ),
         Some(McpConfigFormat::JsonOpenCode) => upsert_opencode_mcp(&path, definition),
-        Some(McpConfigFormat::TomlMcpServers) => upsert_toml_mcp(&path, definition),
+        Some(McpConfigFormat::TomlCodexMcpServers) => upsert_codex_mcp(&path, definition),
         None => Err(ArcError::new(format!(
             "agent '{agent}' does not support mcp"
         ))),
@@ -873,9 +951,14 @@ fn remove_agent_mcp(
         return Ok(());
     };
     match spec.mcp_config_format {
-        Some(McpConfigFormat::JsonMapMcpServers) => remove_json_map_mcp(&path, "mcpServers", name),
+        Some(McpConfigFormat::JsonMapTypedMcpServers)
+        | Some(McpConfigFormat::JsonMapPlainMcpServers)
+        | Some(McpConfigFormat::JsonMapGeminiMcpServers)
+        | Some(McpConfigFormat::JsonMapKimiMcpServers) => {
+            remove_json_map_mcp(&path, "mcpServers", name)
+        }
         Some(McpConfigFormat::JsonOpenCode) => remove_opencode_mcp(&path, name),
-        Some(McpConfigFormat::TomlMcpServers) => remove_toml_mcp(&path, name),
+        Some(McpConfigFormat::TomlCodexMcpServers) => remove_toml_mcp(&path, name),
         None => Ok(()),
     }
 }
@@ -928,7 +1011,7 @@ fn write_agent_subagent(
         }
         SubagentFormat::MarkdownFrontmatter => {
             let file = dir.join(format!("{}.md", sanitize_filename(&definition.name)));
-            let body = render_markdown_subagent(definition, prompt_body)?;
+            let body = render_markdown_subagent(spec.id, definition, prompt_body)?;
             fs::write(&file, body)
                 .map_err(|e| ArcError::new(format!("failed to write {}: {e}", file.display())))?;
         }
@@ -965,31 +1048,32 @@ fn remove_agent_subagent(
     Ok(())
 }
 
-fn render_markdown_subagent(definition: &SubagentDefinition, prompt_body: &str) -> Result<String> {
+fn render_markdown_subagent(
+    agent_id: &str,
+    definition: &SubagentDefinition,
+    prompt_body: &str,
+) -> Result<String> {
     #[derive(Serialize)]
     struct Frontmatter<'a> {
         name: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<&'a str>,
     }
 
     let frontmatter = serde_yaml::to_string(&Frontmatter {
         name: &definition.name,
         description: definition.description.as_deref(),
+        mode: (agent_id == "opencode").then_some("subagent"),
     })
     .map_err(|e| ArcError::new(format!("failed to serialize subagent frontmatter: {e}")))?;
     Ok(format!("---\n{}---\n{}", frontmatter, prompt_body))
 }
 
-fn upsert_json_map_mcp(path: &Path, key: &str, definition: &McpDefinition) -> Result<()> {
+fn upsert_json_map_mcp(path: &Path, key: &str, name: &str, value: serde_json::Value) -> Result<()> {
     let mut root = load_json_root(path)?;
-    set_nested_json_object(
-        &mut root,
-        key,
-        &definition.name,
-        serde_json::to_value(json_map_mcp_value(definition))
-            .map_err(|e| ArcError::new(format!("failed to serialize mcp json: {e}")))?,
-    )?;
+    set_nested_json_object(&mut root, key, name, value)?;
     write_json_root(path, &root)
 }
 
@@ -1025,13 +1109,7 @@ fn remove_opencode_mcp(path: &Path, name: &str) -> Result<()> {
     write_json_root(path, &root)
 }
 
-fn upsert_toml_mcp(path: &Path, definition: &McpDefinition) -> Result<()> {
-    if definition.transport != McpTransportType::Stdio {
-        return Err(ArcError::new(format!(
-            "agent config at {} only supports stdio mcp entries",
-            path.display()
-        )));
-    }
+fn upsert_codex_mcp(path: &Path, definition: &McpDefinition) -> Result<()> {
     let mut root = load_toml_root(path)?;
     let table = root
         .as_table_mut()
@@ -1045,7 +1123,7 @@ fn upsert_toml_mcp(path: &Path, definition: &McpDefinition) -> Result<()> {
             path.display()
         ))
     })?;
-    server_table.insert(definition.name.clone(), toml_stdio_mcp_value(definition)?);
+    server_table.insert(definition.name.clone(), toml_codex_mcp_value(definition)?);
     write_toml_root(path, &root)
 }
 
@@ -1060,23 +1138,99 @@ fn remove_toml_mcp(path: &Path, name: &str) -> Result<()> {
     write_toml_root(path, &root)
 }
 
-fn json_map_mcp_value(definition: &McpDefinition) -> serde_json::Value {
+fn json_typed_mcp_value(definition: &McpDefinition) -> serde_json::Value {
     match definition.transport {
         McpTransportType::Stdio => serde_json::json!({
             "type": "stdio",
             "command": definition.command.clone().unwrap_or_default(),
             "args": definition.args,
             "env": if definition.env.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.env).unwrap_or(serde_json::Value::Null) },
+            "cwd": definition.cwd,
+            "envFile": definition.env_file,
+            "startup_timeout_sec": definition.startup_timeout_sec,
+            "tool_timeout_sec": definition.tool_timeout_sec,
+            "enabled": definition.enabled,
+            "required": definition.required,
         }),
         McpTransportType::Sse => serde_json::json!({
             "type": "sse",
             "url": definition.url.clone().unwrap_or_default(),
             "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.headers).unwrap_or(serde_json::Value::Null) },
+            "oauth": claude_oauth_value(definition),
         }),
         McpTransportType::StreamableHttp => serde_json::json!({
             "type": "http",
             "url": definition.url.clone().unwrap_or_default(),
             "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.headers).unwrap_or(serde_json::Value::Null) },
+            "oauth": claude_oauth_value(definition),
+        }),
+    }
+}
+
+fn json_plain_mcp_value(definition: &McpDefinition) -> serde_json::Value {
+    match definition.transport {
+        McpTransportType::Stdio => serde_json::json!({
+            "command": definition.command.clone().unwrap_or_default(),
+            "args": definition.args,
+            "env": if definition.env.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.env).unwrap_or(serde_json::Value::Null) },
+            "cwd": definition.cwd,
+            "envFile": definition.env_file.as_ref().map(|value| cursor_env_file_value(value)),
+        }),
+        McpTransportType::Sse | McpTransportType::StreamableHttp => serde_json::json!({
+            "url": definition.url.clone().unwrap_or_default(),
+            "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(cursor_map(&definition.headers)).unwrap_or(serde_json::Value::Null) },
+        }),
+    }
+}
+
+fn gemini_mcp_value(definition: &McpDefinition) -> serde_json::Value {
+    match definition.transport {
+        McpTransportType::Stdio => serde_json::json!({
+            "command": definition.command.clone().unwrap_or_default(),
+            "args": definition.args,
+            "env": if definition.env.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.env).unwrap_or(serde_json::Value::Null) },
+            "cwd": definition.cwd,
+            "timeout": definition.timeout,
+            "trust": definition.trust,
+            "includeTools": if definition.include_tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.include_tools).unwrap_or(serde_json::Value::Null) },
+            "excludeTools": if definition.exclude_tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.exclude_tools).unwrap_or(serde_json::Value::Null) },
+        }),
+        McpTransportType::Sse => serde_json::json!({
+            "url": definition.url.clone().unwrap_or_default(),
+            "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.headers).unwrap_or(serde_json::Value::Null) },
+            "timeout": definition.timeout,
+            "trust": definition.trust,
+            "includeTools": if definition.include_tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.include_tools).unwrap_or(serde_json::Value::Null) },
+            "excludeTools": if definition.exclude_tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.exclude_tools).unwrap_or(serde_json::Value::Null) },
+        }),
+        McpTransportType::StreamableHttp => serde_json::json!({
+            "httpUrl": definition.url.clone().unwrap_or_default(),
+            "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.headers).unwrap_or(serde_json::Value::Null) },
+            "timeout": definition.timeout,
+            "trust": definition.trust,
+            "includeTools": if definition.include_tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.include_tools).unwrap_or(serde_json::Value::Null) },
+            "excludeTools": if definition.exclude_tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.exclude_tools).unwrap_or(serde_json::Value::Null) },
+        }),
+    }
+}
+
+fn kimi_mcp_value(definition: &McpDefinition) -> serde_json::Value {
+    match definition.transport {
+        McpTransportType::Stdio => serde_json::json!({
+            "command": definition.command.clone().unwrap_or_default(),
+            "args": definition.args,
+            "env": if definition.env.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.env).unwrap_or(serde_json::Value::Null) },
+            "transport": "stdio",
+        }),
+        McpTransportType::StreamableHttp => serde_json::json!({
+            "url": definition.url.clone().unwrap_or_default(),
+            "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.headers).unwrap_or(serde_json::Value::Null) },
+            "transport": "http",
+        }),
+        McpTransportType::Sse => serde_json::json!({
+            "url": definition.url.clone().unwrap_or_default(),
+            "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.headers).unwrap_or(serde_json::Value::Null) },
+            "transport": "sse",
         }),
     }
 }
@@ -1090,46 +1244,309 @@ fn opencode_mcp_value(definition: &McpDefinition) -> serde_json::Value {
                 "type": "local",
                 "command": command,
                 "enabled": true,
-                "environment": if definition.env.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.env).unwrap_or(serde_json::Value::Null) },
+                "environment": if definition.env.is_empty() { serde_json::Value::Null } else { serde_json::to_value(opencode_map(&definition.env)).unwrap_or(serde_json::Value::Null) },
+                "timeout": definition.timeout,
             })
         }
         McpTransportType::Sse | McpTransportType::StreamableHttp => serde_json::json!({
             "type": "remote",
             "url": definition.url.clone().unwrap_or_default(),
             "enabled": true,
-            "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&definition.headers).unwrap_or(serde_json::Value::Null) },
+            "headers": if definition.headers.is_empty() { serde_json::Value::Null } else { serde_json::to_value(opencode_map(&definition.headers)).unwrap_or(serde_json::Value::Null) },
+            "oauth": opencode_oauth_value(definition),
+            "timeout": definition.timeout,
         }),
     }
 }
 
-fn toml_stdio_mcp_value(definition: &McpDefinition) -> Result<toml::Value> {
-    let command = definition.command.clone().ok_or_else(|| {
-        ArcError::new(format!(
-            "mcp '{}' requires command for stdio transport",
-            definition.name
-        ))
-    })?;
+fn claude_oauth_value(definition: &McpDefinition) -> serde_json::Value {
+    match &definition.oauth {
+        Some(McpOAuthConfig::Disabled(false)) => serde_json::Value::Bool(false),
+        Some(McpOAuthConfig::Settings(settings)) => {
+            let mut obj = serde_json::Map::new();
+            if let Some(value) = &settings.client_id {
+                obj.insert(
+                    "clientId".to_string(),
+                    serde_json::Value::String(value.clone()),
+                );
+            }
+            if let Some(value) = &settings.client_secret {
+                obj.insert(
+                    "clientSecret".to_string(),
+                    serde_json::Value::String(value.clone()),
+                );
+            }
+            if let Some(value) = &settings.scope {
+                obj.insert(
+                    "scope".to_string(),
+                    serde_json::Value::String(value.clone()),
+                );
+            }
+            if let Some(value) = settings.callback_port {
+                obj.insert(
+                    "callbackPort".to_string(),
+                    serde_json::Value::Number(value.into()),
+                );
+            }
+            if let Some(value) = &settings.auth_server_metadata_url {
+                obj.insert(
+                    "authServerMetadataUrl".to_string(),
+                    serde_json::Value::String(value.clone()),
+                );
+            }
+            serde_json::Value::Object(obj)
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn opencode_oauth_value(definition: &McpDefinition) -> serde_json::Value {
+    match &definition.oauth {
+        Some(McpOAuthConfig::Disabled(false)) => serde_json::Value::Bool(false),
+        Some(McpOAuthConfig::Settings(settings)) => {
+            let mut obj = serde_json::Map::new();
+            if let Some(value) = &settings.client_id {
+                obj.insert(
+                    "clientId".to_string(),
+                    serde_json::Value::String(value.clone()),
+                );
+            }
+            if let Some(value) = &settings.client_secret {
+                obj.insert(
+                    "clientSecret".to_string(),
+                    serde_json::Value::String(opencode_placeholder(value)),
+                );
+            }
+            if let Some(value) = &settings.scope {
+                obj.insert(
+                    "scope".to_string(),
+                    serde_json::Value::String(value.clone()),
+                );
+            }
+            serde_json::Value::Object(obj)
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn cursor_map(map: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    map.iter()
+        .map(|(key, value)| (key.clone(), cursor_placeholder(value)))
+        .collect()
+}
+
+fn opencode_map(map: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    map.iter()
+        .map(|(key, value)| (key.clone(), opencode_placeholder(value)))
+        .collect()
+}
+
+fn cursor_env_file_value(value: &str) -> String {
+    cursor_placeholder(value)
+}
+
+fn cursor_placeholder(value: &str) -> String {
+    if let Some(name) = extract_env_name(value) {
+        if value.starts_with("Bearer ") || value.starts_with("Basic ") {
+            let (scheme, _) = value.split_once(' ').unwrap_or(("Bearer", ""));
+            return format!("{scheme} ${{env:{name}}}");
+        }
+        return format!("${{env:{name}}}");
+    }
+    value.to_string()
+}
+
+fn opencode_placeholder(value: &str) -> String {
+    if let Some(name) = extract_env_name(value) {
+        if value.starts_with("Bearer ") || value.starts_with("Basic ") {
+            let (scheme, _) = value.split_once(' ').unwrap_or(("Bearer", ""));
+            return format!("{scheme} {{env:{name}}}");
+        }
+        return format!("{{env:{name}}}");
+    }
+    value.to_string()
+}
+
+fn extract_env_name(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    for prefix in ["Bearer ", "Basic "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return extract_env_name(rest);
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("${")
+        && let Some(name) = rest.strip_suffix('}')
+    {
+        return Some(name.to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("$") {
+        return Some(rest.to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("{env:")
+        && let Some(name) = rest.strip_suffix('}')
+    {
+        return Some(name.to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("${env:")
+        && let Some(name) = rest.strip_suffix('}')
+    {
+        return Some(name.to_string());
+    }
+    None
+}
+
+fn split_codex_headers(
+    headers: &BTreeMap<String, String>,
+) -> (
+    Option<String>,
+    BTreeMap<String, String>,
+    BTreeMap<String, String>,
+) {
+    let mut bearer_token_env_var = None;
+    let mut static_headers = BTreeMap::new();
+    let mut env_headers = BTreeMap::new();
+    for (key, value) in headers {
+        if key.eq_ignore_ascii_case("authorization")
+            && let Some(env_name) = extract_bearer_env_name(value)
+        {
+            bearer_token_env_var = Some(env_name);
+            continue;
+        }
+        if let Some(env_name) = extract_env_name(value) {
+            env_headers.insert(key.clone(), env_name);
+        } else {
+            static_headers.insert(key.clone(), value.clone());
+        }
+    }
+    (bearer_token_env_var, static_headers, env_headers)
+}
+
+fn extract_bearer_env_name(value: &str) -> Option<String> {
+    let (scheme, rest) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    extract_env_name(rest)
+}
+
+fn toml_codex_mcp_value(definition: &McpDefinition) -> Result<toml::Value> {
     let mut table = toml::map::Map::new();
-    table.insert("command".to_string(), toml::Value::String(command));
-    if !definition.args.is_empty() {
+    match definition.transport {
+        McpTransportType::Stdio => {
+            let command = definition.command.clone().ok_or_else(|| {
+                ArcError::new(format!(
+                    "mcp '{}' requires command for stdio transport",
+                    definition.name
+                ))
+            })?;
+            table.insert("command".to_string(), toml::Value::String(command));
+            if !definition.args.is_empty() {
+                table.insert(
+                    "args".to_string(),
+                    toml::Value::Array(
+                        definition
+                            .args
+                            .iter()
+                            .map(|arg| toml::Value::String(arg.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            if !definition.env.is_empty() {
+                let env_table = definition
+                    .env
+                    .iter()
+                    .map(|(key, value)| (key.clone(), toml::Value::String(value.clone())))
+                    .collect();
+                table.insert("env".to_string(), toml::Value::Table(env_table));
+            }
+            if let Some(cwd) = &definition.cwd {
+                table.insert("cwd".to_string(), toml::Value::String(cwd.clone()));
+            }
+        }
+        McpTransportType::StreamableHttp => {
+            table.insert(
+                "url".to_string(),
+                toml::Value::String(definition.url.clone().unwrap_or_default()),
+            );
+            let (bearer_token_env_var, static_headers, env_headers) =
+                split_codex_headers(&definition.headers);
+            if let Some(env_var) = bearer_token_env_var {
+                table.insert(
+                    "bearer_token_env_var".to_string(),
+                    toml::Value::String(env_var),
+                );
+            }
+            if !static_headers.is_empty() {
+                table.insert(
+                    "http_headers".to_string(),
+                    toml::Value::Table(
+                        static_headers
+                            .into_iter()
+                            .map(|(k, v)| (k, toml::Value::String(v)))
+                            .collect(),
+                    ),
+                );
+            }
+            if !env_headers.is_empty() {
+                table.insert(
+                    "env_http_headers".to_string(),
+                    toml::Value::Table(
+                        env_headers
+                            .into_iter()
+                            .map(|(k, v)| (k, toml::Value::String(v)))
+                            .collect(),
+                    ),
+                );
+            }
+        }
+        McpTransportType::Sse => {
+            return Err(ArcError::new(
+                "codex does not support sse transport".to_string(),
+            ));
+        }
+    }
+    if let Some(timeout) = definition.startup_timeout_sec {
         table.insert(
-            "args".to_string(),
+            "startup_timeout_sec".to_string(),
+            toml::Value::Integer(timeout as i64),
+        );
+    }
+    if let Some(timeout) = definition.tool_timeout_sec {
+        table.insert(
+            "tool_timeout_sec".to_string(),
+            toml::Value::Integer(timeout as i64),
+        );
+    }
+    if let Some(enabled) = definition.enabled {
+        table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+    }
+    if let Some(required) = definition.required {
+        table.insert("required".to_string(), toml::Value::Boolean(required));
+    }
+    if !definition.include_tools.is_empty() {
+        table.insert(
+            "enabled_tools".to_string(),
             toml::Value::Array(
                 definition
-                    .args
+                    .include_tools
                     .iter()
-                    .map(|arg| toml::Value::String(arg.clone()))
+                    .map(|item| toml::Value::String(item.clone()))
                     .collect(),
             ),
         );
     }
-    if !definition.env.is_empty() {
-        let env_table = definition
-            .env
-            .iter()
-            .map(|(key, value)| (key.clone(), toml::Value::String(value.clone())))
-            .collect();
-        table.insert("env".to_string(), toml::Value::Table(env_table));
+    if !definition.exclude_tools.is_empty() {
+        table.insert(
+            "disabled_tools".to_string(),
+            toml::Value::Array(
+                definition
+                    .exclude_tools
+                    .iter()
+                    .map(|item| toml::Value::String(item.clone()))
+                    .collect(),
+            ),
+        );
     }
     Ok(toml::Value::Table(table))
 }
@@ -1253,7 +1670,10 @@ fn mcp_install_present(
         return Ok(false);
     }
     match spec.mcp_config_format {
-        Some(McpConfigFormat::JsonMapMcpServers) => {
+        Some(McpConfigFormat::JsonMapTypedMcpServers)
+        | Some(McpConfigFormat::JsonMapPlainMcpServers)
+        | Some(McpConfigFormat::JsonMapGeminiMcpServers)
+        | Some(McpConfigFormat::JsonMapKimiMcpServers) => {
             let root = load_json_root(&path)?;
             Ok(json_nested_contains_key(&root, "mcpServers", name))
         }
@@ -1264,7 +1684,7 @@ fn mcp_install_present(
                 .and_then(serde_json::Value::as_object)
                 .is_some_and(|mcp| mcp.contains_key(name)))
         }
-        Some(McpConfigFormat::TomlMcpServers) => {
+        Some(McpConfigFormat::TomlCodexMcpServers) => {
             let root = load_toml_root(&path)?;
             Ok(root
                 .as_table()
@@ -1328,7 +1748,7 @@ fn tracked_record_path(paths: &ArcPaths, record: &TrackedCapabilityInstall) -> P
         .join(format!("capability-{digest:016x}.json"))
 }
 
-fn validate_resource_name(name: &str, kind: &str) -> Result<()> {
+pub(crate) fn validate_resource_name(name: &str, kind: &str) -> Result<()> {
     if RESOURCE_NAME_RE.is_match(name) {
         return Ok(());
     }
@@ -1348,7 +1768,10 @@ fn validate_secret_map(map: &BTreeMap<String, String>) -> Result<()> {
     Ok(())
 }
 
-fn validate_declared_targets(targets: Option<&Vec<String>>, kind: &ResourceKind) -> Result<()> {
+pub(crate) fn validate_declared_targets(
+    targets: Option<&Vec<String>>,
+    kind: &ResourceKind,
+) -> Result<()> {
     let Some(targets) = targets else {
         return Ok(());
     };
@@ -1375,7 +1798,14 @@ fn is_secret_key(key: &str) -> bool {
 }
 
 fn is_secret_placeholder_value(value: &str) -> bool {
-    ENV_PLACEHOLDER_RE.is_match(value) || AUTH_PLACEHOLDER_RE.is_match(value)
+    ENV_PLACEHOLDER_RE.is_match(value)
+        || ENV_DOLLAR_PLACEHOLDER_RE.is_match(value)
+        || ENV_PROVIDER_PLACEHOLDER_RE.is_match(value)
+        || ENV_OPENCODE_PLACEHOLDER_RE.is_match(value)
+        || AUTH_PLACEHOLDER_RE.is_match(value)
+        || AUTH_DOLLAR_PLACEHOLDER_RE.is_match(value)
+        || AUTH_PROVIDER_PLACEHOLDER_RE.is_match(value)
+        || AUTH_OPENCODE_PLACEHOLDER_RE.is_match(value)
 }
 
 fn normalize_targets(targets: &mut Option<Vec<String>>) {
@@ -1437,11 +1867,22 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: BTreeMap::new(),
+            cwd: None,
+            env_file: None,
             url: Some("https://example.com/mcp".to_string()),
             headers: BTreeMap::from([(
                 "Authorization".to_string(),
                 "Bearer ${GITHUB_TOKEN}".to_string(),
             )]),
+            timeout: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled: None,
+            required: None,
+            trust: None,
+            include_tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            oauth: None,
             description: None,
             scope_fallback: None,
         };
@@ -1458,15 +1899,200 @@ mod tests {
             command: None,
             args: Vec::new(),
             env: BTreeMap::new(),
+            cwd: None,
+            env_file: None,
             url: Some("https://example.com/mcp".to_string()),
             headers: BTreeMap::from([(
                 "Authorization".to_string(),
                 "Bearer ghp_secret".to_string(),
             )]),
+            timeout: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled: None,
+            required: None,
+            trust: None,
+            include_tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            oauth: None,
             description: None,
             scope_fallback: None,
         };
 
         assert!(validate_mcp_definition(&mut definition, SourceScope::Global).is_err());
+    }
+
+    #[test]
+    fn secret_validation_accepts_agent_specific_placeholder_syntax() {
+        for value in [
+            "$GITHUB_TOKEN",
+            "${env:GITHUB_TOKEN}",
+            "{env:GITHUB_TOKEN}",
+            "Bearer $GITHUB_TOKEN",
+            "Bearer ${env:GITHUB_TOKEN}",
+            "Bearer {env:GITHUB_TOKEN}",
+        ] {
+            let mut definition = McpDefinition {
+                name: "github".to_string(),
+                targets: None,
+                transport: McpTransportType::StreamableHttp,
+                command: None,
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+                env_file: None,
+                url: Some("https://example.com/mcp".to_string()),
+                headers: BTreeMap::from([("Authorization".to_string(), value.to_string())]),
+                timeout: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                enabled: None,
+                required: None,
+                trust: None,
+                include_tools: Vec::new(),
+                exclude_tools: Vec::new(),
+                oauth: None,
+                description: None,
+                scope_fallback: None,
+            };
+            assert!(
+                validate_mcp_definition(&mut definition, SourceScope::Global).is_ok(),
+                "{value} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_remote_toml_maps_headers_to_codex_fields() {
+        let definition = McpDefinition {
+            name: "figma".to_string(),
+            targets: None,
+            transport: McpTransportType::StreamableHttp,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            env_file: None,
+            url: Some("https://mcp.figma.com/mcp".to_string()),
+            headers: BTreeMap::from([
+                (
+                    "Authorization".to_string(),
+                    "Bearer ${FIGMA_OAUTH_TOKEN}".to_string(),
+                ),
+                ("X-Region".to_string(), "us-east-1".to_string()),
+                ("X-Trace".to_string(), "${TRACE_ID}".to_string()),
+            ]),
+            timeout: None,
+            startup_timeout_sec: Some(20),
+            tool_timeout_sec: Some(45),
+            enabled: Some(true),
+            required: Some(true),
+            trust: None,
+            include_tools: vec!["open".to_string()],
+            exclude_tools: vec!["delete".to_string()],
+            oauth: None,
+            description: None,
+            scope_fallback: None,
+        };
+        let value = toml_codex_mcp_value(&definition).unwrap();
+        let table = value.as_table().unwrap();
+        assert_eq!(
+            table.get("url").and_then(toml::Value::as_str),
+            Some("https://mcp.figma.com/mcp")
+        );
+        assert_eq!(
+            table
+                .get("bearer_token_env_var")
+                .and_then(toml::Value::as_str),
+            Some("FIGMA_OAUTH_TOKEN")
+        );
+        assert!(table.contains_key("http_headers"));
+        assert!(table.contains_key("env_http_headers"));
+        assert!(table.contains_key("enabled_tools"));
+        assert!(table.contains_key("disabled_tools"));
+    }
+
+    #[test]
+    fn gemini_http_uses_http_url_field() {
+        let definition = McpDefinition {
+            name: "remote".to_string(),
+            targets: None,
+            transport: McpTransportType::StreamableHttp,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            env_file: None,
+            url: Some("https://example.com/mcp".to_string()),
+            headers: BTreeMap::new(),
+            timeout: Some(5_000),
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled: None,
+            required: None,
+            trust: Some(true),
+            include_tools: vec!["safe_tool".to_string()],
+            exclude_tools: Vec::new(),
+            oauth: None,
+            description: None,
+            scope_fallback: None,
+        };
+        let value = gemini_mcp_value(&definition);
+        assert_eq!(value["httpUrl"], "https://example.com/mcp");
+        assert!(value.get("url").is_none());
+    }
+
+    #[test]
+    fn kimi_remote_uses_transport_field() {
+        let definition = McpDefinition {
+            name: "remote".to_string(),
+            targets: None,
+            transport: McpTransportType::StreamableHttp,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            env_file: None,
+            url: Some("https://example.com/mcp".to_string()),
+            headers: BTreeMap::new(),
+            timeout: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled: None,
+            required: None,
+            trust: None,
+            include_tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            oauth: None,
+            description: None,
+            scope_fallback: None,
+        };
+        let value = kimi_mcp_value(&definition);
+        assert_eq!(value["transport"], "http");
+        assert_eq!(value["url"], "https://example.com/mcp");
+    }
+
+    #[test]
+    fn opencode_subagent_frontmatter_includes_mode() {
+        let definition = SubagentDefinition {
+            name: "reviewer".to_string(),
+            description: Some("Repository reviewer".to_string()),
+            targets: None,
+            prompt_file: "reviewer.md".to_string(),
+        };
+        let body = render_markdown_subagent("opencode", &definition, "# Prompt").unwrap();
+        assert!(body.contains("mode: subagent"));
+    }
+
+    #[test]
+    fn claude_subagent_frontmatter_omits_mode() {
+        let definition = SubagentDefinition {
+            name: "reviewer".to_string(),
+            description: Some("Repository reviewer".to_string()),
+            targets: None,
+            prompt_file: "reviewer.md".to_string(),
+        };
+        let body = render_markdown_subagent("claude", &definition, "# Prompt").unwrap();
+        assert!(!body.contains("mode: subagent"));
     }
 }
