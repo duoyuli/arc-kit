@@ -8,13 +8,13 @@ use crate::capability::{
     AppliedScope, CapabilityStatusEntry, CapabilityTargetState, CapabilityTargetStatus,
     DesiredScope, McpApplyPlan, ResourceResolution, SourceScope, SubagentApplyPlan,
     TrackedCapabilityInstall, capability_install_present, list_tracked_capability_installs,
-    load_global_mcps, load_global_subagents, preview_mcp_plan, preview_subagent_plan,
-    resolve_declared_targets, tracking_record_for_target, validate_mcp_definition,
-    validate_subagent_definition,
+    load_global_subagents, preview_mcp_plan, preview_subagent_plan, resolve_declared_targets,
+    tracking_record_for_target, validate_mcp_definition, validate_subagent_definition,
 };
 use crate::detect::DetectCache;
 use crate::engine::{InstallEngine, InstalledResource};
 use crate::market::sources::MarketSourceRegistry;
+use crate::mcp_registry::load_user_registry_mcps;
 use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
 use crate::project::{find_project_config, load_project_config};
@@ -524,7 +524,7 @@ fn collect_capabilities(
         .unwrap_or_default();
 
     let mut mcps = Vec::new();
-    match load_global_mcps(paths) {
+    match load_user_registry_mcps(paths) {
         Ok(global_mcps) => {
             for definition in global_mcps {
                 let plan = McpApplyPlan {

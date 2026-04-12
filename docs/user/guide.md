@@ -229,6 +229,7 @@ arc mcp uninstall mysvc
 ```
 
 - **合并规则**：同名时 **用户 registry 中的定义覆盖内置预设**。
+- `arc mcp list` / `arc mcp info` 会展示内置预设；`arc status` 只展示已经由 arc 管理并写入用户 registry 的全局 MCP，不会把未安装的内置预设误报为已生效。
 - `arc mcp install` 只管理**全局**定义；项目级 MCP 请写入 `arc.toml` 的 `[[mcps]]`，再执行 `arc project apply`。
 - `--agent` 可重复；不传时表示写入所有支持该资源类型的 agent。
 - CLI 参数中的 transport 取值为 `stdio`、`sse`、`streamable-http`；写入 `arc.toml` 时使用 TOML 枚举值 `stdio`、`sse`、`streamable_http`。

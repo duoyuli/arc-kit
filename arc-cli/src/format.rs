@@ -8,7 +8,7 @@ use arc_core::status::{
 
 // ── Schema version ────────────────────────────────────────
 // Bump when a breaking change is made to any JSON schema.
-pub const SCHEMA_VERSION: &str = "4";
+pub const SCHEMA_VERSION: &str = "5";
 
 // ── status ────────────────────────────────────────────────
 

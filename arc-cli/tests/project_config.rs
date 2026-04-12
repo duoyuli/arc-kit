@@ -46,7 +46,7 @@ fn arc_project_apply_json_noninteractive_no_arc_toml() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert_eq!(json["schema_version"], "4");
+    assert_eq!(json["schema_version"], "5");
     assert_eq!(json["ok"], false);
 }
 
@@ -369,11 +369,31 @@ fn arc_status_json_exposes_project_agents_and_catalog_modules() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert_eq!(json["schema_version"], "4");
+    assert_eq!(json["schema_version"], "5");
     assert_eq!(json["project"]["state"], "active");
     assert!(json.get("agents").is_some());
     assert!(json.get("catalog").is_some());
     assert!(json.get("actions").is_some());
+}
+
+#[test]
+fn arc_status_json_does_not_report_builtin_presets_as_installed_mcps() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+
+    fs::write(proj.path().join("arc.toml"), "[skills]\nrequire = []\n").unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["status", "--format", "json"])
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["schema_version"], "5");
+    assert_eq!(json["mcps"], serde_json::json!([]));
 }
 
 #[test]

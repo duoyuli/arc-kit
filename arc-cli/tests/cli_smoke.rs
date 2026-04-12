@@ -74,7 +74,7 @@ fn provider_test_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, output: {stdout}"));
-    assert_eq!(json["schema_version"], "4");
+    assert_eq!(json["schema_version"], "5");
 }
 
 #[test]
@@ -279,7 +279,7 @@ fn mcp_info_missing_returns_structured_json_error() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json["schema_version"], "4");
+    assert_eq!(json["schema_version"], "5");
     assert_eq!(json["ok"], false);
     assert!(json["error"].as_str().unwrap().contains("not found"));
 }
@@ -294,7 +294,7 @@ fn subagent_info_missing_returns_structured_json_error() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json["schema_version"], "4");
+    assert_eq!(json["schema_version"], "5");
     assert_eq!(json["ok"], false);
     assert!(json["error"].as_str().unwrap().contains("not found"));
 }
@@ -517,7 +517,84 @@ fn apply_json_output() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert_eq!(json["schema_version"], "4");
+    assert_eq!(json["schema_version"], "5");
+}
+
+#[test]
+fn mcp_list_json_includes_builtin_origin() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["mcp", "list", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["schema_version"], "5");
+    let filesystem = json["mcps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "filesystem")
+        .expect("filesystem preset should exist");
+    assert_eq!(filesystem["origin"], "builtin");
+}
+
+#[test]
+fn mcp_info_json_redacts_secrets_by_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let define = arc_cmd_with_home(temp.path())
+        .args([
+            "mcp",
+            "define",
+            "github",
+            "--transport",
+            "streamable-http",
+            "--url",
+            "https://api.github.com/mcp",
+            "--env",
+            "GITHUB_TOKEN=${GITHUB_TOKEN}",
+            "--header",
+            "Authorization=Bearer ${GITHUB_TOKEN}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        define.status.success(),
+        "{}",
+        String::from_utf8_lossy(&define.stderr)
+    );
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["mcp", "info", "github", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["schema_version"], "5");
+    assert_eq!(json["env"]["GITHUB_TOKEN"], "<redacted>");
+    assert_eq!(json["headers"]["Authorization"], "<redacted>");
+
+    let revealed = arc_cmd_with_home(temp.path())
+        .args([
+            "mcp",
+            "info",
+            "github",
+            "--format",
+            "json",
+            "--show-secrets",
+        ])
+        .output()
+        .unwrap();
+    assert!(revealed.status.success());
+    let revealed_stdout = String::from_utf8_lossy(&revealed.stdout);
+    let revealed_json: serde_json::Value = serde_json::from_str(&revealed_stdout).unwrap();
+    assert_eq!(revealed_json["env"]["GITHUB_TOKEN"], "${GITHUB_TOKEN}");
+    assert_eq!(
+        revealed_json["headers"]["Authorization"],
+        "Bearer ${GITHUB_TOKEN}"
+    );
 }
 
 // ── non-TTY guard smoke tests ──────────────────────────
