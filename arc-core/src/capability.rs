@@ -14,6 +14,7 @@ use crate::agent::{
 };
 use crate::detect::DetectCache;
 use crate::error::{ArcError, Result};
+use crate::mcp_registry;
 use crate::models::ResourceKind;
 use crate::paths::{ArcPaths, expand_user_path};
 
@@ -289,23 +290,8 @@ pub fn validate_subagent_definition(
 }
 
 pub fn load_global_mcps(paths: &ArcPaths) -> Result<Vec<McpDefinition>> {
-    let mut entries = Vec::new();
-    let dir = paths.mcps_dir();
-    let Ok(items) = fs::read_dir(&dir) else {
-        return Ok(entries);
-    };
-    for item in items.flatten() {
-        let path = item.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
-            continue;
-        }
-        let body = fs::read_to_string(&path)
-            .map_err(|e| ArcError::new(format!("failed to read {}: {e}", path.display())))?;
-        let mut definition: McpDefinition = toml::from_str(&body)
-            .map_err(|e| ArcError::new(format!("failed to parse {}: {e}", path.display())))?;
-        validate_mcp_definition(&mut definition, SourceScope::Global)?;
-        entries.push(definition);
-    }
+    let catalog = mcp_registry::load_merged_mcp_catalog(paths)?;
+    let mut entries: Vec<McpDefinition> = catalog.into_iter().map(|e| e.definition).collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
 }
@@ -313,25 +299,11 @@ pub fn load_global_mcps(paths: &ArcPaths) -> Result<Vec<McpDefinition>> {
 pub fn save_global_mcp(paths: &ArcPaths, definition: &McpDefinition) -> Result<()> {
     let mut normalized = definition.clone();
     validate_mcp_definition(&mut normalized, SourceScope::Global)?;
-    let path = paths.mcps_dir().join(format!("{}.toml", normalized.name));
-    let body = toml::to_string_pretty(&normalized).map_err(|e| {
-        ArcError::new(format!(
-            "failed to serialize mcp '{}': {e}",
-            normalized.name
-        ))
-    })?;
-    fs::write(&path, body)
-        .map_err(|e| ArcError::new(format!("failed to write {}: {e}", path.display())))?;
-    Ok(())
+    mcp_registry::upsert_user_registry_mcp(paths, &normalized)
 }
 
 pub fn remove_global_mcp(paths: &ArcPaths, name: &str) -> Result<()> {
-    let path = paths.mcps_dir().join(format!("{name}.toml"));
-    if !path.exists() {
-        return Ok(());
-    }
-    fs::remove_file(&path)
-        .map_err(|e| ArcError::new(format!("failed to remove {}: {e}", path.display())))?;
+    let _ = mcp_registry::remove_user_registry_mcp(paths, name)?;
     Ok(())
 }
 

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use arc_core::detect::DetectCache;
+use arc_core::detect::{AgentInfo, DetectCache};
 use arc_core::paths::ArcPaths;
 use arc_core::provider::{
     ClaudeProviderConfig, CodexProviderConfig, ProviderInfo, ProviderSettings, apply_provider,
@@ -575,7 +575,18 @@ fn seed_default_providers_creates_official_for_detected_agent() {
     let paths = ArcPaths::with_user_home(temp.path());
     fs::create_dir_all(temp.path().join(".claude")).unwrap();
 
-    let cache = DetectCache::new(&paths);
+    let mut agents = BTreeMap::new();
+    agents.insert(
+        "claude".to_string(),
+        AgentInfo {
+            name: "claude".to_string(),
+            detected: true,
+            root: Some(temp.path().join(".claude")),
+            executable: Some("/fake/claude".to_string()),
+            version: Some("2.0.0".to_string()),
+        },
+    );
+    let cache = DetectCache::from_map(agents);
     seed_default_providers(&paths, &cache);
 
     let providers = load_providers_for_agent(&paths.providers_dir(), "claude");

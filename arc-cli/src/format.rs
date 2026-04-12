@@ -62,6 +62,8 @@ pub struct McpListOutput {
 #[derive(Serialize)]
 pub struct McpItem {
     pub name: String,
+    /// "builtin" or "user"
+    pub origin: String,
     pub transport: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

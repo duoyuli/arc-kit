@@ -209,22 +209,32 @@ arc skill info my-skill
 
 ## mcp
 
-管理全局 MCP 定义。裸调用 `arc mcp` 等同于 `arc mcp list`。
+管理全局 MCP：内置预设（随 arc-kit 发布）与用户配置合并；用户侧使用单一文件 `~/.arc-cli/mcps/registry.toml`（`[[mcps]]` 数组）。旧版「每个 MCP 一个 `*.toml`」会在首次访问时自动迁移到 `registry.toml`，原文件备份到 `mcps/migration-backup-*` 目录。裸调用 `arc mcp` 等同于 `arc mcp list`。
 
 ```bash
 arc mcp list
-arc mcp info github
+arc mcp info filesystem
+arc mcp info filesystem --show-secrets   # 打印 env/headers 明文（默认会脱敏）
 
-arc mcp install github --transport stdio --command npx --arg @modelcontextprotocol/server-github
-arc mcp install github --agent claude --agent cursor --transport streamable-http --url https://example.com/mcp
-arc mcp uninstall github
+# 按内置预设名称安装（仅需名称，可选 --agent）
+arc mcp install filesystem --agent codex
+
+# 自定义全局 MCP（完整参数，非交互一键）
+arc mcp define mysvc --transport stdio --command npx --arg -y --arg @scope/pkg
+
+# 或在 install 上显式传入 transport/command/url（自定义安装路径）
+arc mcp install mysrv --transport stdio --command npx --arg -y --arg @scope/pkg
+
+arc mcp uninstall mysvc
 ```
 
+- **合并规则**：同名时 **用户 registry 中的定义覆盖内置预设**。
 - `arc mcp install` 只管理**全局**定义；项目级 MCP 请写入 `arc.toml` 的 `[[mcps]]`，再执行 `arc project apply`。
 - `--agent` 可重复；不传时表示写入所有支持该资源类型的 agent。
 - CLI 参数中的 transport 取值为 `stdio`、`sse`、`streamable-http`；写入 `arc.toml` 时使用 TOML 枚举值 `stdio`、`sse`、`streamable_http`。
 - `stdio` transport 必须提供 `--command`，不能提供 `--url`；远程 transport（`sse` / `streamable-http`）必须提供 `--url`，不能提供 `--command`。
 - `--env KEY=VALUE` 与 `--header KEY=VALUE` 支持重复传入；涉及 secret 的键（如 `token`、`authorization`、`api_key`）必须使用环境变量占位符，例如 `${GITHUB_TOKEN}` 或 `Bearer ${GITHUB_TOKEN}`。
+- `mcp list --format json` 中每条含 `origin`：`builtin` 或 `user`。
 
 项目级 MCP 在 `arc status` / `arc status --format json` 中会显示 `desired_scope` 与 `applied_scope`。对于只支持全局配置的 agent（例如 OpenClaw），默认会标记为 `skipped` / `requires_global_fallback`；显式传 `arc project apply --allow-global-fallback`，或在 `arc.toml` 的对应 `[[mcps]]` 下声明 `scope_fallback = "global"` 后，才会落到全局配置路径。
 

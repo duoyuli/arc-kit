@@ -131,7 +131,7 @@ arc skill install       # 安装 skill
 arc skill uninstall     # 卸载 skill
 arc skill info          # 显示 skill 详情
 arc mcp list            # 列出全局 MCP
-arc mcp install         # 安装或更新全局 MCP
+arc mcp install <name>  # 按预设名安装全局 MCP（或 arc mcp define 自定义）
 arc mcp uninstall       # 卸载全局 MCP
 arc mcp info            # 显示 MCP 详情
 arc subagent list       # 列出全局 subagent

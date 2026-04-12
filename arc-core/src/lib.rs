@@ -8,6 +8,7 @@ pub mod error;
 pub mod git;
 pub mod io;
 pub mod market;
+pub mod mcp_registry;
 pub mod models;
 pub mod paths;
 pub mod project;

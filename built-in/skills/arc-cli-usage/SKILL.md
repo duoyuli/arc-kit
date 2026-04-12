@@ -71,7 +71,7 @@ arc skill install       交互式；或 arc skill install <name> [-a|--agent …
 arc skill uninstall …   [-a|--agent …] 或 --all
 arc skill info <name>   详情（不存在时 `--format json` 返回结构化 ErrorOutput）
 
-arc mcp list / info / install / uninstall
+arc mcp list / info / install / define / uninstall
 arc subagent list / info / install / uninstall
 
 arc project apply       [--agent <id> ... | --all-agents]；无 arc.toml 时交互下可创建；有 arc.toml 时按配置安装 skill、切换 provider、应用项目级 MCP / subagent

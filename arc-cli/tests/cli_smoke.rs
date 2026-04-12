@@ -345,21 +345,7 @@ fn mcp_install_writes_global_definition_and_codex_config() {
     write_fake_cli(&bin_dir, "codex", "codex-cli 0.116.0");
 
     let output = arc_cmd()
-        .args([
-            "mcp",
-            "install",
-            "filesystem",
-            "--agent",
-            "codex",
-            "--transport",
-            "stdio",
-            "--command",
-            "npx",
-            "--arg",
-            "-y",
-            "--arg",
-            "@modelcontextprotocol/server-filesystem",
-        ])
+        .args(["mcp", "install", "filesystem", "--agent", "codex"])
         .env("ARC_KIT_USER_HOME", temp.path())
         .env(
             "PATH",
@@ -373,7 +359,7 @@ fn mcp_install_writes_global_definition_and_codex_config() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let canonical = temp.path().join(".arc-cli/mcps/filesystem.toml");
+    let canonical = temp.path().join(".arc-cli/mcps/registry.toml");
     let codex_config = temp.path().join(".codex/config.toml");
     assert!(canonical.exists());
     assert!(codex_config.exists());
@@ -390,7 +376,7 @@ fn mcp_install_rejects_plaintext_secret_headers() {
     let output = arc_cmd()
         .args([
             "mcp",
-            "install",
+            "define",
             "github",
             "--transport",
             "streamable-http",
@@ -411,17 +397,7 @@ fn mcp_install_rejects_plaintext_secret_headers() {
 fn mcp_install_rejects_unknown_target_agent() {
     let temp = tempfile::tempdir().unwrap();
     let output = arc_cmd()
-        .args([
-            "mcp",
-            "install",
-            "filesystem",
-            "--agent",
-            "codxe",
-            "--transport",
-            "stdio",
-            "--command",
-            "npx",
-        ])
+        .args(["mcp", "install", "filesystem", "--agent", "codxe"])
         .env("ARC_KIT_USER_HOME", temp.path())
         .output()
         .unwrap();

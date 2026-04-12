@@ -132,13 +132,19 @@ pub enum SkillCommand {
 
 #[derive(Subcommand)]
 pub enum McpCommand {
-    #[command(about = "List global MCP definitions")]
+    #[command(about = "List global MCP definitions (built-in presets and user registry)")]
     List,
     #[command(about = "Show global MCP details")]
     Info(McpInfoArgs),
-    #[command(about = "Install or update a global MCP definition")]
+    #[command(
+        about = "Install or update a global MCP from a preset name, or pass --transport for a custom definition"
+    )]
     Install(McpInstallArgs),
-    #[command(about = "Remove a global MCP definition")]
+    #[command(
+        about = "Add or update a custom global MCP (full definition; use for servers not in presets)"
+    )]
+    Define(McpDefineArgs),
+    #[command(about = "Remove a user MCP from the registry (built-in presets cannot be removed)")]
     Uninstall(McpUninstallArgs),
 }
 
@@ -146,10 +152,35 @@ pub enum McpCommand {
 pub struct McpInfoArgs {
     #[arg(help = "MCP name")]
     pub name: String,
+    #[arg(long, help = "Print secret env/header values (default: redacted)")]
+    pub show_secrets: bool,
 }
 
 #[derive(Args)]
 pub struct McpInstallArgs {
+    #[arg(help = "MCP name (built-in preset or user registry entry)")]
+    pub name: String,
+    #[arg(short, long = "agent", value_name = "AGENT")]
+    pub agent: Vec<String>,
+    /// Custom install: set transport and command/url (omit to use a preset by name)
+    #[arg(long, value_enum)]
+    pub transport: Option<McpTransportArg>,
+    #[arg(long)]
+    pub command: Option<String>,
+    #[arg(long = "arg", allow_hyphen_values = true)]
+    pub arg: Vec<String>,
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+    #[arg(long)]
+    pub url: Option<String>,
+    #[arg(long = "header", value_name = "KEY=VALUE")]
+    pub header: Vec<String>,
+    #[arg(long)]
+    pub description: Option<String>,
+}
+
+#[derive(Args)]
+pub struct McpDefineArgs {
     #[arg(help = "MCP name")]
     pub name: String,
     #[arg(short, long = "agent", value_name = "AGENT")]
