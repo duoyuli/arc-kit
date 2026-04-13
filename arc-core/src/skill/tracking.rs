@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{SkillInstallStrategy, agent_spec};
 use crate::detect::DetectCache;
 use crate::error::{ArcError, Result};
+use crate::io::atomic_write_bytes;
 
 const TRACKING_PREFIX: &str = ".arc-skill-install.";
 const TRACKING_SUFFIX: &str = ".json";
@@ -51,7 +52,7 @@ pub fn track_global_skill_install(
     };
     let body = serde_json::to_vec_pretty(&record)
         .map_err(|e| ArcError::new(format!("failed to serialize install metadata: {e}")))?;
-    fs::write(metadata_path(skills_dir, skill), body)
+    atomic_write_bytes(&metadata_path(skills_dir, skill), &body)
         .map_err(|e| ArcError::new(format!("failed to write install metadata: {e}")))?;
     Ok(())
 }

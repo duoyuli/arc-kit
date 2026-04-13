@@ -1,11 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, IsTerminal};
 
 use arc_core::agent::AppliedResourceScope;
 use arc_core::capability::{
-    apply_mcp_plan, list_tracked_capability_installs, remove_tracked_capability, save_global_mcp,
     CapabilityTargetState, McpApplyPlan, McpDefinition, McpOAuthConfig, McpOAuthSettings,
-    McpTransportType, SourceScope, TrackedCapabilityInstall,
+    McpTransportType, SourceScope, TrackedCapabilityInstall, apply_mcp_plan,
+    list_tracked_capability_installs, remove_tracked_capability, save_global_mcp,
 };
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
@@ -13,7 +12,7 @@ use arc_core::mcp_registry::{self, McpEntryOrigin};
 use arc_core::models::{CatalogResource, ResourceKind};
 use arc_core::paths::ArcPaths;
 use arc_tui::{
-    pick_mcp, run_capability_uninstall_wizard, run_install_wizard, run_mcp_browser, UninstallEntry,
+    UninstallEntry, pick_mcp, run_capability_uninstall_wizard, run_install_wizard, run_mcp_browser,
 };
 use console::style;
 
@@ -21,9 +20,9 @@ use crate::cli::{
     McpCommand, McpDefineArgs, McpInfoArgs, McpInstallArgs, McpTransportArg, McpUninstallArgs,
     OutputFormat,
 };
+use crate::commands::common::{CommandMode, command_mode, print_not_found_json, require_name_arg};
 use crate::format::{
-    print_json, ErrorOutput, McpInfoOutput, McpItem, McpListOutput, WriteResult, WriteResultItem,
-    SCHEMA_VERSION,
+    McpInfoOutput, McpItem, McpListOutput, SCHEMA_VERSION, WriteResult, WriteResultItem, print_json,
 };
 
 pub fn run(
@@ -72,7 +71,7 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
     let mut sorted = catalog;
     sorted.sort_by(|a, b| a.definition.name.cmp(&b.definition.name));
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !matches!(command_mode(fmt), CommandMode::Interactive) {
         render_mcp_list(&sorted);
         return Ok(());
     }
@@ -88,12 +87,8 @@ fn info(paths: &ArcPaths, args: McpInfoArgs, fmt: &OutputFormat) -> Result<(), A
     let name = match args.name {
         Some(name) => name,
         None => {
-            let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-            if *fmt == OutputFormat::Json || !is_tty {
-                return Err(ArcError::with_hint(
-                    "MCP name required in non-interactive mode.".to_string(),
-                    "Usage: arc mcp info <name> [--show-secrets]".to_string(),
-                ));
+            if !matches!(command_mode(fmt), CommandMode::Interactive) {
+                require_name_arg(fmt, "MCP", "arc mcp info <name> [--show-secrets]")?;
             }
             if catalog.is_empty() {
                 println!("  {}", style("No MCP entries.").yellow());
@@ -109,11 +104,7 @@ fn info(paths: &ArcPaths, args: McpInfoArgs, fmt: &OutputFormat) -> Result<(), A
     };
     let Some(entry) = catalog.into_iter().find(|e| e.definition.name == name) else {
         if *fmt == OutputFormat::Json {
-            return print_json(&ErrorOutput {
-                schema_version: SCHEMA_VERSION,
-                ok: false,
-                error: format!("mcp '{name}' not found"),
-            });
+            return print_not_found_json(format!("mcp '{name}' not found"));
         }
         return Err(ArcError::new(format!("mcp '{name}' not found")));
     };
@@ -269,12 +260,8 @@ fn install(
                 "Usage: arc mcp install <name> [--transport <transport>] [--command <cmd> | --url <url>]".to_string(),
             ));
         }
-        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-        if *fmt == OutputFormat::Json || !is_tty {
-            return Err(ArcError::with_hint(
-                "MCP name required in non-interactive mode.".to_string(),
-                "Usage: arc mcp install <name> [--agent <agent>]".to_string(),
-            ));
+        if !matches!(command_mode(fmt), CommandMode::Interactive) {
+            require_name_arg(fmt, "MCP", "arc mcp install <name> [--agent <agent>]")?;
         }
         let resources: Vec<CatalogResource> = catalog
             .iter()
@@ -524,12 +511,8 @@ fn apply_and_print(
 
 fn uninstall(paths: &ArcPaths, args: McpUninstallArgs, fmt: &OutputFormat) -> Result<(), ArcError> {
     let Some(name) = args.name else {
-        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-        if *fmt == OutputFormat::Json || !is_tty {
-            return Err(ArcError::with_hint(
-                "MCP name required in non-interactive mode.".to_string(),
-                "Usage: arc mcp uninstall <name>".to_string(),
-            ));
+        if !matches!(command_mode(fmt), CommandMode::Interactive) {
+            require_name_arg(fmt, "MCP", "arc mcp uninstall <name>")?;
         }
         let catalog = mcp_registry::load_merged_mcp_catalog(paths)?;
         let tracked = list_tracked_capability_installs(paths);
@@ -553,11 +536,7 @@ fn uninstall_by_name(paths: &ArcPaths, name: &str, fmt: &OutputFormat) -> Result
     let catalog = mcp_registry::load_merged_mcp_catalog(paths)?;
     if !catalog.iter().any(|entry| entry.definition.name == name) {
         if *fmt == OutputFormat::Json {
-            return print_json(&ErrorOutput {
-                schema_version: SCHEMA_VERSION,
-                ok: false,
-                error: format!("mcp '{name}' not found"),
-            });
+            return print_not_found_json(format!("mcp '{name}' not found"));
         }
         return Err(ArcError::new(format!("mcp '{name}' not found")));
     }

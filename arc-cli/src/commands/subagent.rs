@@ -1,34 +1,34 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use arc_core::agent::AppliedResourceScope;
 use arc_core::capability::{
-    apply_subagent_plan, list_tracked_capability_installs, remove_global_subagent,
-    remove_tracked_capability, save_global_subagent, validate_subagent_targets,
     CapabilityTargetState, SourceScope, SubagentApplyPlan, SubagentDefinition,
-    TrackedCapabilityInstall,
+    TrackedCapabilityInstall, apply_subagent_plan, list_tracked_capability_installs,
+    remove_global_subagent, remove_tracked_capability, save_global_subagent,
+    validate_subagent_targets,
 };
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::models::ResourceKind;
 use arc_core::paths::ArcPaths;
 use arc_core::subagent_registry::{
-    find_global_subagent, load_merged_subagent_catalog, SubagentEntryOrigin,
+    SubagentEntryOrigin, find_global_subagent, load_merged_subagent_catalog,
 };
 use arc_tui::{
-    pick_subagent, run_capability_uninstall_wizard, run_subagent_browser,
-    run_subagent_install_wizard, UninstallEntry,
+    UninstallEntry, pick_subagent, run_capability_uninstall_wizard, run_subagent_browser,
+    run_subagent_install_wizard,
 };
 use console::style;
 
 use crate::cli::{
     OutputFormat, SubagentCommand, SubagentInfoArgs, SubagentInstallArgs, SubagentUninstallArgs,
 };
+use crate::commands::common::{CommandMode, command_mode, print_not_found_json, require_name_arg};
 use crate::format::{
-    print_json, ErrorOutput, SubagentInfoOutput, SubagentItem, SubagentListOutput, WriteResult,
-    WriteResultItem, SCHEMA_VERSION,
+    SCHEMA_VERSION, SubagentInfoOutput, SubagentItem, SubagentListOutput, WriteResult,
+    WriteResultItem, print_json,
 };
 
 pub fn run(
@@ -71,7 +71,7 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
         return Ok(());
     }
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !matches!(command_mode(fmt), CommandMode::Interactive) {
         render_subagent_list(&subagents);
         return Ok(());
     }
@@ -84,12 +84,8 @@ fn info(paths: &ArcPaths, args: SubagentInfoArgs, fmt: &OutputFormat) -> Result<
     let name = match args.name {
         Some(name) => name,
         None => {
-            let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-            if *fmt == OutputFormat::Json || !is_tty {
-                return Err(ArcError::with_hint(
-                    "Subagent name required in non-interactive mode.".to_string(),
-                    "Usage: arc subagent info <name>".to_string(),
-                ));
+            if !matches!(command_mode(fmt), CommandMode::Interactive) {
+                require_name_arg(fmt, "Subagent", "arc subagent info <name>")?;
             }
             let catalog = load_merged_subagent_catalog(paths)?;
             if catalog.is_empty() {
@@ -106,11 +102,7 @@ fn info(paths: &ArcPaths, args: SubagentInfoArgs, fmt: &OutputFormat) -> Result<
     };
     let Some(subagent) = find_global_subagent(paths, &name)? else {
         if *fmt == OutputFormat::Json {
-            return print_json(&ErrorOutput {
-                schema_version: SCHEMA_VERSION,
-                ok: false,
-                error: format!("subagent '{name}' not found"),
-            });
+            return print_not_found_json(format!("subagent '{name}' not found"));
         }
         return Err(ArcError::new(format!("subagent '{name}' not found")));
     };
@@ -260,15 +252,16 @@ fn resolve_install_inputs(
     args: SubagentInstallArgs,
     fmt: &OutputFormat,
 ) -> Result<ResolvedInstallInputs, ArcError> {
-    let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let interactive = matches!(command_mode(fmt), CommandMode::Interactive);
     let usage = "Usage: arc subagent install <name> [--prompt-file <path>] [--agent <agent>] [--description <text>]".to_string();
 
     if args.name.is_none() {
-        if *fmt == OutputFormat::Json || !is_tty {
-            return Err(ArcError::with_hint(
-                "Subagent name required in non-interactive mode.".to_string(),
-                usage,
-            ));
+        if !interactive {
+            require_name_arg(
+                fmt,
+                "Subagent",
+                "arc subagent install <name> [--prompt-file <path>] [--agent <agent>] [--description <text>]",
+            )?;
         }
 
         let available_agents = cache.agents_for_install(&ResourceKind::SubAgent);
@@ -355,12 +348,8 @@ fn uninstall(
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
     let Some(name) = args.name else {
-        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-        if *fmt == OutputFormat::Json || !is_tty {
-            return Err(ArcError::with_hint(
-                "Subagent name required in non-interactive mode.".to_string(),
-                "Usage: arc subagent uninstall <name>".to_string(),
-            ));
+        if !matches!(command_mode(fmt), CommandMode::Interactive) {
+            require_name_arg(fmt, "Subagent", "arc subagent uninstall <name>")?;
         }
         let catalog = load_merged_subagent_catalog(paths)?;
         let tracked = list_tracked_capability_installs(paths);

@@ -1,10 +1,10 @@
 use std::path::Path;
 
 use crate::capability::{
-    apply_mcp_plan, apply_subagent_plan, list_tracked_capability_installs,
-    remove_tracked_capability, tracking_record_for_target, validate_mcp_definition,
-    validate_subagent_targets, CapabilityTargetState, CapabilityTargetStatus, McpApplyPlan,
-    SourceScope, SubagentApplyPlan, TrackedCapabilityInstall,
+    CapabilityTargetState, CapabilityTargetStatus, McpApplyPlan, SourceScope, SubagentApplyPlan,
+    TrackedCapabilityInstall, apply_mcp_plan, apply_subagent_plan,
+    list_tracked_capability_installs, remove_tracked_capability, tracking_record_for_target,
+    validate_mcp_definition, validate_subagent_targets,
 };
 use crate::detect::DetectCache;
 use crate::engine::InstallEngine;
@@ -17,9 +17,8 @@ use crate::provider::{apply_provider, load_providers_for_agent, supported_provid
 use crate::skill::SkillRegistry;
 
 use super::{
-    find_project_config, load_project_config, resolve_effective_config,
-    resolve_project_capability_requirements, EffectiveConfig, ProjectCapabilityRequirements,
-    ProjectConfig,
+    EffectiveConfig, ProjectCapabilityRequirements, ProjectConfig, find_project_config,
+    load_project_config, resolve_effective_config, resolve_project_capability_requirements,
 };
 
 #[derive(Debug, Clone)]

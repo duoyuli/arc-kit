@@ -109,6 +109,7 @@ if *fmt == OutputFormat::Json { ... }
 ### 规则 5：TUI 仅存在于 `arc-tui`
 
 `dialoguer` 的交互调用与主题渲染仅存在于 `arc-tui`；`arc-cli` 分支调用；`arc-core` 不依赖 UI 库，但可为 TUI 准备中性的数据映射。
+文本列表布局、TTY / JSON 模式判定等 CLI 细节同样应留在 `arc-cli` / `arc-tui`，不要为了复用把终端排版 helper 放回 `arc-core`。
 
 列表型 TUI 在渲染时须按当前终端视口宽度裁剪每一行，不能依赖终端自动换行；否则在窄窗口下重绘与清屏会出现残影或重复内容。
 
@@ -124,6 +125,7 @@ if *fmt == OutputFormat::Json { ... }
 - `info` 保留显式 `<name>` 的 Agent 路径；若 `list` 已能 drill down，则 `info` 不必强制再做第二套交互选择
 - `install` / `uninstall` 采用 `name: Option<String>`，TTY 下省略名称进入 wizard，非交互下缺参立即报错
 - 所有只读入口都必须提供 `--format json`
+- 共享的 TTY / JSON / 缺参判定优先收口到公共 helper，避免每个资源命令各写一套分支
 
 | Verb | 面向人的交互式语义 | 面向 Agent 的非交互式语义 |
 |------|--------------------|---------------------------|

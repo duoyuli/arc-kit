@@ -7,8 +7,8 @@ use arc_core::error::ArcError;
 use arc_core::models::ResourceKind;
 use arc_core::paths::ArcPaths;
 use arc_core::project::{
-    execute_project_apply, find_project_config, prepare_project_apply, EffectiveConfig,
-    ProjectApplyExecution, ProjectMarketEventStatus, ProjectSkillApplyStatus,
+    EffectiveConfig, ProjectApplyExecution, ProjectMarketEventStatus, ProjectSkillApplyStatus,
+    execute_project_apply, find_project_config, prepare_project_apply,
 };
 use arc_core::provider::seed_default_providers;
 use arc_tui::select_agents;
@@ -17,7 +17,7 @@ use console::style;
 use crate::cli::{OutputFormat, ProjectApplyArgs};
 use crate::commands::arc_toml_wizard;
 use crate::display::agent_display_name;
-use crate::format::{print_json, WriteResult, WriteResultItem, SCHEMA_VERSION};
+use crate::format::{SCHEMA_VERSION, WriteResult, WriteResultItem, print_json};
 
 pub fn run(
     paths: &ArcPaths,

@@ -5,8 +5,9 @@ use std::fs;
 
 use serde::{Deserialize, Serialize};
 
-use crate::capability::{validate_mcp_definition, McpDefinition};
+use crate::capability::{McpDefinition, validate_mcp_definition};
 use crate::error::{ArcError, Result};
+use crate::io::atomic_write_string;
 use crate::paths::ArcPaths;
 
 const REGISTRY_FILENAME: &str = "registry.toml";
@@ -108,7 +109,7 @@ fn save_registry_file(paths: &ArcPaths, mcps: &[McpDefinition]) -> Result<()> {
     };
     let body = toml::to_string_pretty(&file)
         .map_err(|e| ArcError::new(format!("failed to serialize MCP registry: {e}")))?;
-    fs::write(&path, body)
+    atomic_write_string(&path, &body)
         .map_err(|e| ArcError::new(format!("failed to write {}: {e}", path.display())))?;
     Ok(())
 }
@@ -154,12 +155,14 @@ mod tests {
     #[test]
     fn builtin_presets_parse() {
         let v = load_builtin_presets().unwrap();
-        assert!(v
-            .iter()
-            .any(|d| d.name == "filesystem" && d.transport == McpTransportType::Stdio));
-        assert!(v
-            .iter()
-            .any(|d| d.name == "drawio" && d.transport == McpTransportType::Stdio));
+        assert!(
+            v.iter()
+                .any(|d| d.name == "filesystem" && d.transport == McpTransportType::Stdio)
+        );
+        assert!(
+            v.iter()
+                .any(|d| d.name == "drawio" && d.transport == McpTransportType::Stdio)
+        );
         assert!(v.iter().any(|d| {
             d.name == "sequential-thinking" && d.transport == McpTransportType::Stdio
         }));

@@ -19,4 +19,3 @@ toml.workspace = true
 ureq.workspace = true
 log.workspace = true
 chrono.workspace = true
-console.workspace = true

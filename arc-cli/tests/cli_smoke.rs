@@ -111,6 +111,70 @@ fn provider_use_json_requires_name_even_in_tty_like_environment() {
 }
 
 #[test]
+fn provider_use_requires_agent_when_name_exists_in_multiple_agents() {
+    let temp = tempfile::tempdir().unwrap();
+    let providers_dir = temp.path().join(".arc-cli").join("providers");
+    fs::create_dir_all(&providers_dir).unwrap();
+    fs::write(
+        providers_dir.join("claude.toml"),
+        "[shared]\ndisplay_name = \"Claude Shared\"\ndescription = \"shared\"\n",
+    )
+    .unwrap();
+    fs::write(
+        providers_dir.join("codex.toml"),
+        "[shared]\ndisplay_name = \"Codex Shared\"\ndescription = \"shared\"\n",
+    )
+    .unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["provider", "use", "shared"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Use --agent to specify"));
+}
+
+#[test]
+fn provider_list_json_reports_active_flags_per_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let providers_dir = temp.path().join(".arc-cli").join("providers");
+    fs::create_dir_all(&providers_dir).unwrap();
+    fs::write(
+        providers_dir.join("claude.toml"),
+        "[official]\ndisplay_name = \"Anthropic\"\ndescription = \"official\"\n",
+    )
+    .unwrap();
+    fs::write(
+        providers_dir.join("codex.toml"),
+        "[official]\ndisplay_name = \"OpenAI\"\ndescription = \"official\"\n",
+    )
+    .unwrap();
+    fs::write(
+        providers_dir.join("active.toml"),
+        "[claude]\nactive = \"official\"\n[codex]\nactive = \"official\"\n",
+    )
+    .unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["provider", "list", "--format", "json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let items = json["providers"].as_array().unwrap();
+    assert!(items.iter().any(|item| {
+        item["agent"] == "claude" && item["name"] == "official" && item["active"] == true
+    }));
+    assert!(items.iter().any(|item| {
+        item["agent"] == "codex" && item["name"] == "official" && item["active"] == true
+    }));
+}
+
+#[test]
 fn status_auto_initializes() {
     let temp = tempfile::tempdir().unwrap();
     let output = arc_cmd()
@@ -738,6 +802,81 @@ fn apply_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(json["schema_version"], "5");
+}
+
+#[test]
+fn market_add_and_remove_json_roundtrip() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("example-market");
+    fs::create_dir_all(&repo).unwrap();
+    run_git(
+        &["init", "--initial-branch=main", repo.to_str().unwrap()],
+        temp.path(),
+    );
+    run_git(&["config", "user.name", "Arc Test"], &repo);
+    run_git(&["config", "user.email", "arc-test@example.com"], &repo);
+    fs::create_dir_all(repo.join("demo-skill")).unwrap();
+    fs::write(repo.join("demo-skill").join("SKILL.md"), "# Demo\n").unwrap();
+    run_git(&["add", "."], &repo);
+    run_git(&["commit", "-m", "initial"], &repo);
+    let git_url = format!("file://{}", repo.display());
+
+    let add = arc_cmd_with_home(temp.path())
+        .args(["market", "add", &git_url, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let add_json: serde_json::Value =
+        serde_json::from_slice(&add.stdout).expect("valid market add JSON");
+    assert_eq!(add_json["ok"], true);
+
+    let list = arc_cmd_with_home(temp.path())
+        .args(["market", "list", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.stdout).expect("valid market list JSON");
+    let source_id = list_json["markets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["git_url"] == git_url)
+        .and_then(|item| item["id"].as_str())
+        .expect("added market id")
+        .to_string();
+
+    let remove = arc_cmd_with_home(temp.path())
+        .args(["market", "remove", &source_id, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        remove.status.success(),
+        "{}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+    let remove_json: serde_json::Value =
+        serde_json::from_slice(&remove.stdout).expect("valid market remove JSON");
+    assert_eq!(remove_json["ok"], true);
+
+    let list_after = arc_cmd_with_home(temp.path())
+        .args(["market", "list", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(list_after.status.success());
+    let list_after_json: serde_json::Value =
+        serde_json::from_slice(&list_after.stdout).expect("valid market list JSON");
+    assert!(
+        !list_after_json["markets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == source_id)
+    );
 }
 
 #[test]

@@ -1,19 +1,19 @@
 use std::collections::HashMap;
-use std::io::{self, IsTerminal};
 
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::paths::ArcPaths;
 use arc_core::provider::test::test_provider;
 use arc_core::provider::{
-    ProviderInfo, apply_provider, build_provider_list_lines, load_providers_for_agent,
-    read_active_provider, seed_default_providers, supported_provider_agents,
-    supports_provider_agent,
+    ProviderInfo, apply_provider, load_providers_for_agent, read_active_provider,
+    seed_default_providers, supported_provider_agents, supports_provider_agent,
 };
 use arc_tui::select_provider;
 use console::{Alignment, pad_str, style};
 
 use crate::cli::{OutputFormat, ProviderCommand};
+use crate::commands::common::{CommandMode, command_mode, print_not_found_json, require_name_arg};
+use crate::commands::provider_lines::{ProviderListLine, build_provider_list_lines};
 use crate::display::agent_display_name;
 use crate::format::{
     ProviderItem, ProviderListOutput, ProviderTestItem, ProviderTestOutput, SCHEMA_VERSION,
@@ -84,7 +84,7 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
     let has_any = !lines.is_empty();
 
     print_provider_list_lines_stdout(&lines);
-    if has_any && io::stdout().is_terminal() {
+    if has_any && matches!(command_mode(fmt), CommandMode::Interactive) {
         println!(
             "  {}",
             style("Run arc provider use to switch active provider.").dim()
@@ -96,19 +96,18 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
     Ok(())
 }
 
-fn print_provider_list_lines_stdout(lines: &[arc_core::provider::ProviderListLine]) {
+fn print_provider_list_lines_stdout(lines: &[ProviderListLine]) {
     for line in lines {
         match line {
-            arc_core::provider::ProviderListLine::AgentHeader { agent_display } => {
+            ProviderListLine::AgentHeader { agent_display } => {
                 println!();
                 println!("  {}", style(agent_display).bold());
             }
-            arc_core::provider::ProviderListLine::ProviderRow {
+            ProviderListLine::ProviderRow {
                 is_active,
                 display_name,
                 description,
                 name_width,
-                ..
             } => {
                 let marker = if *is_active { "✓" } else { " " };
                 if description.is_empty() {
@@ -148,12 +147,8 @@ fn use_provider(
             None => resolve_provider_by_name(&providers_dir, name)?,
         },
         None => {
-            let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-            if *fmt == OutputFormat::Json || !is_tty {
-                return Err(ArcError::with_hint(
-                    "Provider name required in non-interactive mode.".to_string(),
-                    "Usage: arc provider use <name> [--agent <agent>]".to_string(),
-                ));
+            if !matches!(command_mode(fmt), CommandMode::Interactive) {
+                require_name_arg(fmt, "Provider", "arc provider use <name> [--agent <agent>]")?;
             }
             interactive_select(paths)?
         }
@@ -236,9 +231,13 @@ fn test(
             match providers.into_iter().find(|p| p.name == name) {
                 Some(p) => vec![p],
                 None => {
-                    return Err(ArcError::new(format!(
-                        "Provider '{name}' not found for agent '{agent}'."
-                    )));
+                    return if *fmt == OutputFormat::Json {
+                        print_not_found_json(format!("provider '{name}' not found"))
+                    } else {
+                        Err(ArcError::new(format!(
+                            "Provider '{name}' not found for agent '{agent}'."
+                        )))
+                    };
                 }
             }
         }

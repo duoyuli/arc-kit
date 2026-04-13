@@ -4,7 +4,7 @@ use std::io;
 use arc_core::mcp_registry::{McpCatalogEntry, McpEntryOrigin};
 use arc_core::models::SkillEntry;
 use arc_core::subagent_registry::{SubagentCatalogEntry, SubagentEntryOrigin};
-use console::{measure_text_width, pad_str, style, truncate_str, Alignment, Key, Term};
+use console::{Alignment, Key, Term, measure_text_width, pad_str, style, truncate_str};
 
 use crate::agent::agent_display_name;
 
@@ -698,8 +698,8 @@ mod tests {
     use arc_core::models::{SkillEntry, SkillOrigin};
 
     use super::{
-        build_items, collect_selection, render_tab_line, ProjectRequirementItem,
-        ProjectRequirementsSelection, RequirementKind,
+        ProjectRequirementItem, ProjectRequirementsSelection, RequirementKind, build_items,
+        collect_selection, render_tab_line,
     };
     use arc_core::mcp_registry::{McpCatalogEntry, McpEntryOrigin};
     use arc_core::subagent_registry::{SubagentCatalogEntry, SubagentEntryOrigin};

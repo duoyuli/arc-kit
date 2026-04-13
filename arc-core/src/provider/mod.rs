@@ -1,12 +1,6 @@
 mod claude;
 mod codex;
-mod list_lines;
 pub mod test;
-
-pub use list_lines::{
-    ProviderListLine, build_provider_list_lines, default_provider_list_row,
-    format_provider_list_line_plain, provider_list_line_mapping,
-};
 
 use std::collections::BTreeMap;
 use std::fs;

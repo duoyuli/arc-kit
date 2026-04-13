@@ -55,7 +55,7 @@ cargo run -p arc-cli -- status --format json
 - `status --format json` 的模块存在性（含 `mcps`、`subagents`、`actions`）
 - `skill install`、`skill uninstall`、`mcp uninstall`、`subagent uninstall`、`provider use` 在 `--format json` 下的非交互缺参失败
 - `skill info`、`mcp info`、`subagent info` 的结构化 JSON 错误
-- `project apply` 的项目 capability 安装、目标收缩清理，以及 `--allow-global-fallback` 后的 `status` 反映
+- `project apply` 的项目 capability 安装、目标收缩清理，以及 global-only agent 在 `status` 中的反映
 
 当前自动回归仍以**非交互式**与 **JSON** 语义为主；`provider use` 的 tab 选择器、`skill` / `mcp` / `subagent` 的 browser，以及各类 TTY 向导仍建议在终端里做 spot-check。
 
@@ -96,8 +96,13 @@ cargo run -p arc-cli -- status --format json
 ### 模块职责摘要
 
 - **arc-cli**：`app` 编排、`cli` 命令表、`commands/*`、`format.rs` JSON 结构体。
-- **arc-core**：`CodingAgentSpec` 与 `detect`、`engine` + `adapters`、`skill` 三源注册表、`capability`（mcp / subagent canonical source、tracking、落地）、`market`、`provider`、`paths`、`io`。
+- **arc-core**：`CodingAgentSpec` 与 `detect`、`engine` + `adapters`、`skill` 三源注册表、`capability`（已拆分 model / validate / storage / agent-config）、`status`（按 agents / catalog / project / capabilities / actions 分收集器）、`market`、`provider`、`paths`、`io`。
 - **arc-tui**：模糊搜索、skill / mcp browser、provider tab 选择器、subagent 安装向导、通用 capability 卸载选择器、主题。
+
+补充约束：
+
+- 终端排版、列表布局和交互模式判定 helper 留在 `arc-cli` / `arc-tui`，不要回流到 `arc-core`。
+- 文件写入优先复用 `arc-core::io` 的原子写接口；新增 registry、tracking 或 agent 配置写盘时不要直接 `fs::write`。
 
 ---
 

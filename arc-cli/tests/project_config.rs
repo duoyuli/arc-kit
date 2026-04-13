@@ -66,6 +66,51 @@ fn arc_project_apply_json_when_arc_toml_exists() {
 }
 
 #[test]
+fn arc_project_edit_json_reports_structured_noninteractive_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+    fs::write(proj.path().join("arc.toml"), "[skills]\nrequire = []\n").unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["project", "edit", "--format", "json"])
+        .current_dir(proj.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["schema_version"], "5");
+    assert_eq!(json["ok"], false);
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("requires an interactive terminal")
+    );
+}
+
+#[test]
+fn arc_project_edit_noninteractive_text_fails_with_hint() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+    fs::write(proj.path().join("arc.toml"), "[skills]\nrequire = []\n").unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["project", "edit"])
+        .current_dir(proj.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("interactive terminal"));
+    assert!(stderr.contains("Run from a TTY"));
+}
+
+#[test]
 fn arc_project_apply_fails_without_arc_toml() {
     let temp = tempfile::tempdir().unwrap();
 
@@ -758,18 +803,22 @@ require = []
 
     let codex_config = fs::read_to_string(proj.path().join(".codex").join("config.toml")).unwrap();
     assert!(!codex_config.contains("filesystem"));
-    assert!(!proj
-        .path()
-        .join(".codex")
-        .join("agents")
-        .join("reviewer.toml")
-        .exists());
-    assert!(!proj
-        .path()
-        .join(".claude")
-        .join("agents")
-        .join("reviewer.md")
-        .exists());
+    assert!(
+        !proj
+            .path()
+            .join(".codex")
+            .join("agents")
+            .join("reviewer.toml")
+            .exists()
+    );
+    assert!(
+        !proj
+            .path()
+            .join(".claude")
+            .join("agents")
+            .join("reviewer.md")
+            .exists()
+    );
 }
 
 // ── helpers ───────────────────────────────────────────────────

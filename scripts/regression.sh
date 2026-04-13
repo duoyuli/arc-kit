@@ -63,7 +63,7 @@ run_arc_in() {
   (
     cd "$cwd"
     ARC_KIT_USER_HOME="$TMP_HOME" \
-    ARC_KIT_BUILTIN_MANIFEST_URL="file://$BUILTIN_MANIFEST_PATH" \
+    ARC_KIT_BUILTIN_MARKET_INDEX_URL="file://$BUILTIN_MANIFEST_PATH" \
     PATH="$ARC_TEST_PATH" \
     cargo run --manifest-path "$ROOT/Cargo.toml" -q -p arc-cli -- "$@"
   )
@@ -127,6 +127,8 @@ require_stdout '"actions"' "status json exposes actions"
 run_arc_in "$TMP_CWD" project --help >/dev/null
 run_arc_in "$TMP_CWD" project apply --help >/dev/null
 run_arc_in "$TMP_CWD" project edit --help >/dev/null
+require_exit_code 0 "project edit json returns structured failure" "$TMP_CWD" project edit --format json
+require_stdout '"ok": false' "project edit json exposes structured failure"
 run_arc_in "$TMP_CWD" skill list >/dev/null
 run_arc_in "$TMP_CWD" mcp list >/dev/null
 run_arc_in "$TMP_CWD" subagent list >/dev/null
@@ -139,6 +141,10 @@ require_exit_code 1 "skill install json requires name" "$TMP_CWD" skill install 
 require_stderr "Skill name required" "skill install json requires name"
 require_exit_code 1 "skill uninstall json requires name" "$TMP_CWD" skill uninstall --format json
 require_stderr "Skill name required" "skill uninstall json requires name"
+require_exit_code 1 "mcp uninstall json requires name" "$TMP_CWD" mcp uninstall --format json
+require_stderr "MCP name required" "mcp uninstall json requires name"
+require_exit_code 1 "subagent uninstall json requires name" "$TMP_CWD" subagent uninstall --format json
+require_stderr "Subagent name required" "subagent uninstall json requires name"
 require_exit_code 1 "provider use json requires name" "$TMP_CWD" provider use --format json
 require_stderr "Provider name required" "provider use json requires name"
 
@@ -157,30 +163,45 @@ require_stdout '"error": "subagent '\''missing'\'' not found"' "subagent info mi
 PROJ_RETARGET="$TMP_ROOT/project-retarget"
 mkdir -p "$PROJ_RETARGET"
 printf '# reviewer\n' >"$PROJ_RETARGET/reviewer.md"
-cat >"$PROJ_RETARGET/arc.toml" <<'EOF'
+mkdir -p "$TMP_HOME/.arc-cli/mcps" "$TMP_HOME/.arc-cli/subagents"
+cat >"$TMP_HOME/.arc-cli/mcps/registry.toml" <<'EOF'
+registry_version = 1
+
 [[mcps]]
 name = "filesystem"
 targets = ["claude", "codex"]
 transport = "stdio"
 command = "npx"
-
-[[subagents]]
+EOF
+cat >"$TMP_HOME/.arc-cli/subagents/reviewer.toml" <<'EOF'
 name = "reviewer"
+description = "Repository reviewer"
 targets = ["claude", "codex"]
-prompt_file = "reviewer.md"
+prompt_file = "ignored.md"
+EOF
+cp "$PROJ_RETARGET/reviewer.md" "$TMP_HOME/.arc-cli/subagents/reviewer.md"
+cat >"$PROJ_RETARGET/arc.toml" <<'EOF'
+[mcps]
+require = ["filesystem"]
+
+[subagents]
+require = ["reviewer"]
 EOF
 run_arc_in "$PROJ_RETARGET" project apply >/dev/null
-cat >"$PROJ_RETARGET/arc.toml" <<'EOF'
+cat >"$TMP_HOME/.arc-cli/mcps/registry.toml" <<'EOF'
+registry_version = 1
+
 [[mcps]]
 name = "filesystem"
 targets = ["claude"]
 transport = "stdio"
 command = "npx"
-
-[[subagents]]
+EOF
+cat >"$TMP_HOME/.arc-cli/subagents/reviewer.toml" <<'EOF'
 name = "reviewer"
+description = "Repository reviewer"
 targets = ["claude"]
-prompt_file = "reviewer.md"
+prompt_file = "ignored.md"
 EOF
 run_arc_in "$PROJ_RETARGET" project apply >/dev/null
 if [ -e "$PROJ_RETARGET/.codex/agents/reviewer.toml" ]; then
@@ -195,24 +216,31 @@ fi
 test -f "$PROJ_RETARGET/.claude/agents/reviewer.md"
 rg -q 'filesystem' "$PROJ_RETARGET/.mcp.json"
 
-# Project global fallback + status schema/runtime reflection.
-PROJ_FALLBACK="$TMP_ROOT/project-fallback"
-mkdir -p "$PROJ_FALLBACK"
-cat >"$PROJ_FALLBACK/arc.toml" <<'EOF'
+# Project global-only agent skip + status reflection.
+PROJ_GLOBAL_ONLY="$TMP_ROOT/project-global-only"
+mkdir -p "$PROJ_GLOBAL_ONLY"
+cat >"$TMP_HOME/.arc-cli/mcps/registry.toml" <<'EOF'
+registry_version = 1
+
 [[mcps]]
 name = "github"
 targets = ["kimi"]
 transport = "streamable_http"
 url = "https://api.github.com/mcp"
 EOF
-require_exit_code 0 "project apply global fallback json" "$PROJ_FALLBACK" project apply --format json --allow-global-fallback
+cat >"$PROJ_GLOBAL_ONLY/arc.toml" <<'EOF'
+[mcps]
+require = ["github"]
+EOF
+require_exit_code 0 "project apply global-only skip json" "$PROJ_GLOBAL_ONLY" project apply --format json
 require_stdout '"resource_kind": "mcp"' "project apply json reports mcp item"
-require_stdout '"applied_scope": "global"' "project apply json reports global fallback"
-require_exit_code 0 "status json reflects fallback install" "$PROJ_FALLBACK" status --format json
+require_stdout '"status": "skipped"' "project apply json reports skipped item"
+require_stdout '"reason": "global_only_agent"' "project apply json reports global-only skip"
+require_exit_code 0 "status json reflects project mcp entry" "$PROJ_GLOBAL_ONLY" status --format json
 require_stdout '"mcps"' "status json has mcps module"
 require_stdout '"subagents"' "status json has subagents module"
 require_stdout '"actions"' "status json has actions module"
 require_stdout '"name": "github"' "status json reports project mcp"
-require_stdout '"applied_scope": "global"' "status json reflects existing fallback install"
+require_stdout '"reason": "global_only_agent"' "status json reflects project skip reason"
 
 echo "==> All regression checks passed."

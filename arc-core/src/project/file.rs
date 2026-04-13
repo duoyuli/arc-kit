@@ -3,6 +3,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ArcError, Result};
+use crate::io::atomic_write_string;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,7 +127,7 @@ pub fn write_project_config(path: &Path, config: &ProjectConfig) -> Result<()> {
         .map_err(|e| ArcError::new(format!("failed to serialize arc.toml: {e}")))?;
     let header =
         "# arc.toml — arc-kit project configuration\n# Safe to commit. Contains no secrets.\n\n";
-    std::fs::write(path, format!("{header}{content}"))
+    atomic_write_string(path, &format!("{header}{content}"))
         .map_err(|e| ArcError::new(format!("failed to write arc.toml: {e}")))
 }
 

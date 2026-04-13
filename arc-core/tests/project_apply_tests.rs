@@ -3,7 +3,7 @@ use std::fs;
 
 use arc_core::detect::{AgentInfo, DetectCache};
 use arc_core::paths::ArcPaths;
-use arc_core::project::{execute_project_apply, prepare_project_apply, ProjectSkillApplyStatus};
+use arc_core::project::{ProjectSkillApplyStatus, execute_project_apply, prepare_project_apply};
 
 fn cache_with_claude(home: &std::path::Path) -> DetectCache {
     let agents = BTreeMap::from([(
@@ -17,6 +17,12 @@ fn cache_with_claude(home: &std::path::Path) -> DetectCache {
         },
     )]);
     DetectCache::from_map(agents)
+}
+
+fn seed_empty_market_index(paths: &ArcPaths) {
+    let index = paths.market_index_cache();
+    fs::create_dir_all(index.parent().unwrap()).unwrap();
+    fs::write(&index, "version = 1\nupdated_at = \"2026-04-14\"\n").unwrap();
 }
 
 #[test]
@@ -36,6 +42,7 @@ fn project_apply_service_installs_missing_project_skill() {
 
     let paths = ArcPaths::with_user_home(&home);
     paths.ensure_arc_home().unwrap();
+    seed_empty_market_index(&paths);
     let cache = cache_with_claude(&home);
 
     let plan = prepare_project_apply(&paths, &cache, &repo).unwrap();

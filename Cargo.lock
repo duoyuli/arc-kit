@@ -108,7 +108,6 @@ version = "2026.4.13"
 dependencies = [
  "anyhow",
  "chrono",
- "console",
  "dirs",
  "include_dir",
  "log",

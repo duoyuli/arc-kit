@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::{self, IsTerminal};
 
 use arc_core::detect::DetectCache;
 use arc_core::engine::InstallEngine;
@@ -15,10 +14,11 @@ use console::style;
 use crate::cli::{
     OutputFormat, SkillCommand, SkillInfoArgs, SkillInstallArgs, SkillListArgs, SkillUninstallArgs,
 };
+use crate::commands::common::{CommandMode, command_mode, print_not_found_json, require_name_arg};
 use crate::display::{agent_display_name, agent_display_names};
 use crate::format::{
-    ErrorOutput, SCHEMA_VERSION, SkillInfoOutput, SkillItem, SkillListOutput, WriteResult,
-    WriteResultItem, print_json,
+    SCHEMA_VERSION, SkillInfoOutput, SkillItem, SkillListOutput, WriteResult, WriteResultItem,
+    print_json,
 };
 
 pub fn run(
@@ -82,7 +82,7 @@ fn list(
         return Ok(());
     }
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !matches!(command_mode(fmt), CommandMode::Interactive) {
         render_skill_list(&skills);
         return Ok(());
     }
@@ -128,12 +128,8 @@ fn install(
     skills.sort_by_key(|s| s.installed_targets.is_empty());
 
     if args.name.is_none() {
-        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-        if *fmt == OutputFormat::Json || !is_tty {
-            return Err(ArcError::with_hint(
-                "Skill name required in non-interactive mode.".to_string(),
-                "Usage: arc skill install <name> [--agent <agent>]".to_string(),
-            ));
+        if !matches!(command_mode(fmt), CommandMode::Interactive) {
+            require_name_arg(fmt, "Skill", "arc skill install <name> [--agent <agent>]")?;
         }
         let agents = cache.agents_for_install(&ResourceKind::Skill);
         let (selected_names, selected_agents) = run_skill_install_wizard(&skills, &agents)
@@ -153,11 +149,7 @@ fn install(
     let name = args.name.expect("checked optional name");
     let Some(skill) = skills.into_iter().find(|s| s.name == name) else {
         if *fmt == OutputFormat::Json {
-            return print_json(&ErrorOutput {
-                schema_version: SCHEMA_VERSION,
-                ok: false,
-                error: format!("skill '{name}' not found."),
-            });
+            return print_not_found_json(format!("skill '{name}' not found."));
         }
         return Err(ArcError::new(format!("skill '{name}' not found.")));
     };
@@ -322,12 +314,12 @@ fn uninstall(
     let engine = InstallEngine::new(cache.clone());
 
     let Some(name) = args.name else {
-        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-        if *fmt == OutputFormat::Json || !is_tty {
-            return Err(ArcError::with_hint(
-                "Skill name required in non-interactive mode.".to_string(),
-                "Usage: arc skill uninstall <name> [--agent <agent>] [--all]".to_string(),
-            ));
+        if !matches!(command_mode(fmt), CommandMode::Interactive) {
+            require_name_arg(
+                fmt,
+                "Skill",
+                "arc skill uninstall <name> [--agent <agent>] [--all]",
+            )?;
         }
         let registry = SkillRegistry::new(paths.clone(), cache.clone());
         print_bootstrap_report(&registry.bootstrap_catalog()?);
@@ -449,11 +441,7 @@ fn info(
 
     let Some(skill) = registry.find(&args.name) else {
         if *fmt == OutputFormat::Json {
-            return print_json(&ErrorOutput {
-                schema_version: SCHEMA_VERSION,
-                ok: false,
-                error: format!("skill '{}' not found.", args.name),
-            });
+            return print_not_found_json(format!("skill '{}' not found.", args.name));
         }
         return Err(ArcError::new(format!("skill '{}' not found.", args.name)));
     };

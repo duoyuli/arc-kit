@@ -3,6 +3,7 @@ use std::path::Path;
 
 use include_dir::{Dir, include_dir};
 
+use crate::io::atomic_write_bytes;
 use crate::market::scanner::extract_skill_summary;
 use crate::models::{SkillEntry, SkillOrigin};
 
@@ -67,7 +68,7 @@ fn extract_dir(dir: &Dir, dest: &Path) -> std::io::Result<()> {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&target, file.contents())?;
+        atomic_write_bytes(&target, file.contents())?;
     }
     for sub in dir.dirs() {
         let rel = sub.path().strip_prefix(dir.path()).unwrap_or(sub.path());

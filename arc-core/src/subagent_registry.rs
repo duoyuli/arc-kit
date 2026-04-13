@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::capability::{SourceScope, SubagentDefinition, validate_subagent_definition};
 use crate::error::{ArcError, Result};
+use crate::io::atomic_write_string;
 use crate::paths::ArcPaths;
 
 const BUILTIN_SUBAGENT_INDEX_TOML: &str = include_str!("../../built-in/subagent/index.toml");
@@ -48,7 +49,7 @@ fn materialize_builtin_prompt(paths: &ArcPaths, name: &str, prompt_body: &str) -
     fs::create_dir_all(&dir)
         .map_err(|e| ArcError::new(format!("failed to create {}: {e}", dir.display())))?;
     let prompt_path = dir.join(format!("{name}.md"));
-    fs::write(&prompt_path, prompt_body)
+    atomic_write_string(&prompt_path, prompt_body)
         .map_err(|e| ArcError::new(format!("failed to write {}: {e}", prompt_path.display())))?;
     Ok(prompt_path)
 }
