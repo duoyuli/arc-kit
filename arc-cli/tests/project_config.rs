@@ -263,12 +263,12 @@ fn arc_apply_installs_missing_skills() {
     // Verify skill was installed under the project (Codex project-local layout).
     let installed = proj
         .path()
-        .join(".agents")
+        .join("codex")
         .join("skills")
         .join("my-local-skill");
     assert!(
         installed.exists(),
-        "skill should be installed at project .agents/skills, got {}",
+        "skill should be installed at project codex/skills, got {}",
         installed.display()
     );
 }
@@ -721,6 +721,74 @@ require = ["filesystem"]
     );
     assert!(proj.path().join("opencode.json").exists());
     assert!(!proj.path().join(".opencode/settings.json").exists());
+}
+
+#[test]
+fn arc_project_apply_previews_project_mcps_and_subagents_in_text_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_cli(&bin_dir, "codex", "codex-cli 0.116.0");
+    write_fake_cli(&bin_dir, "claude", "2.1.84 (Claude Code)");
+    write_global_mcp_registry(
+        temp.path(),
+        r#"
+[[mcps]]
+name = "filesystem"
+targets = ["claude", "codex"]
+transport = "stdio"
+command = "npx"
+"#,
+    );
+    write_global_subagent(
+        temp.path(),
+        "reviewer",
+        r#"
+name = "reviewer"
+description = "Repository reviewer"
+targets = ["claude", "codex"]
+prompt_file = "ignored.md"
+"#,
+        "# reviewer\n",
+    );
+    fs::write(
+        proj.path().join("arc.toml"),
+        r#"
+[mcps]
+require = ["filesystem"]
+
+[subagents]
+require = ["reviewer"]
+"#,
+    )
+    .unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["project", "apply"])
+        .env(
+            "PATH",
+            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap()),
+        )
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\n\n  mcps (required in arc.toml)"));
+    assert!(stdout.contains("filesystem  will apply"));
+    assert!(stdout.contains("\n\n  subagents (required in arc.toml)"));
+    assert!(stdout.contains("reviewer  will apply"));
+    assert!(stdout.contains("mcps"));
+    assert!(stdout.contains("filesystem"));
+    assert!(stdout.contains("subagents"));
+    assert!(stdout.contains("reviewer"));
 }
 
 #[test]

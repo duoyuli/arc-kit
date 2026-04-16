@@ -7,8 +7,8 @@ use arc_core::error::ArcError;
 use arc_core::models::ResourceKind;
 use arc_core::paths::ArcPaths;
 use arc_core::project::{
-    EffectiveConfig, ProjectApplyExecution, ProjectMarketEventStatus, ProjectSkillApplyStatus,
-    execute_project_apply, find_project_config, prepare_project_apply,
+    ConfigSource, EffectiveConfig, ProjectApplyExecution, ProjectMarketEventStatus,
+    ProjectSkillApplyStatus, execute_project_apply, find_project_config, prepare_project_apply,
 };
 use arc_core::provider::seed_default_providers;
 use arc_tui::select_agents;
@@ -68,26 +68,15 @@ pub fn run(
     }
 
     println!();
-    println!("  {}", style(&plan.effective.project_name).bold());
+    println!("{}", style(&plan.effective.project_name).bold());
 
-    print_required_skills_status(&plan.effective);
-
-    println!();
-
-    render_market_events(&plan);
-    let skill_install_count = plan.effective.missing_installable.len();
-    if skill_install_count > 0 {
-        println!(
-            "  skills    -> installing {}",
-            style(format!(
-                "{} skill{}",
-                skill_install_count,
-                if skill_install_count == 1 { "" } else { "s" }
-            ))
-            .cyan()
-        );
+    let printed_requirements =
+        print_project_requirements_status(&plan.effective, plan.provider_to_switch.as_deref());
+    if !printed_requirements {
+        println!();
     }
 
+    render_market_events(&plan);
     println!();
 
     let targets = if plan.effective.missing_installable.is_empty() {
@@ -128,12 +117,74 @@ pub fn run(
     Ok(())
 }
 
-/// Lists each `[skills] require` entry and whether it is present, installable, or unknown.
-fn print_required_skills_status(effective: &EffectiveConfig) {
-    if effective.required_skills.is_empty() {
-        return;
+fn print_project_requirements_status(
+    effective: &EffectiveConfig,
+    provider_to_switch: Option<&str>,
+) -> bool {
+    let mut printed_sections = 0usize;
+
+    if print_required_provider_status(effective, provider_to_switch) {
+        printed_sections += 1;
+    }
+    if print_required_skills_status(effective) {
+        printed_sections += 1;
+    }
+    if print_required_named_status(
+        "mcps",
+        &effective.required_mcps,
+        &effective.missing_mcps_unavailable,
+        "will apply",
+    ) {
+        printed_sections += 1;
+    }
+    if print_required_named_status(
+        "subagents",
+        &effective.required_subagents,
+        &effective.missing_subagents_unavailable,
+        "will apply",
+    ) {
+        printed_sections += 1;
     }
 
+    if printed_sections > 0 {
+        println!();
+    }
+    printed_sections > 0
+}
+
+fn print_required_provider_status(
+    effective: &EffectiveConfig,
+    provider_to_switch: Option<&str>,
+) -> bool {
+    let Some(provider) = &effective.provider else {
+        return false;
+    };
+    if provider.source != ConfigSource::Project {
+        return false;
+    }
+
+    println!();
+    println!(
+        "  {} {}",
+        style("provider").bold(),
+        style("(required in arc.toml)").dim()
+    );
+    let status_line = if provider_to_switch.is_some() {
+        format!("{}", style("will switch").cyan())
+    } else {
+        format!("{}", style("present").green())
+    };
+    println!("    {}  {}", style(&provider.value).bold(), status_line);
+    true
+}
+
+/// Lists each `[skills] require` entry and whether it is present, installable, or unknown.
+fn print_required_skills_status(effective: &EffectiveConfig) -> bool {
+    if effective.required_skills.is_empty() {
+        return false;
+    }
+
+    println!();
     println!(
         "  {} {}",
         style("skills").bold(),
@@ -149,7 +200,34 @@ fn print_required_skills_status(effective: &EffectiveConfig) {
         };
         println!("    {}  {}", style(name).bold(), status_line);
     }
+    true
+}
+
+fn print_required_named_status(
+    title: &str,
+    required: &[String],
+    unavailable: &[String],
+    install_status: &str,
+) -> bool {
+    if required.is_empty() {
+        return false;
+    }
+
     println!();
+    println!(
+        "  {} {}",
+        style(title).bold(),
+        style("(required in arc.toml)").dim()
+    );
+    for name in required {
+        let status_line = if unavailable.contains(name) {
+            format!("{}", style("not in catalog").yellow())
+        } else {
+            format!("{}", style(install_status).cyan())
+        };
+        println!("    {}  {}", style(name).bold(), status_line);
+    }
+    true
 }
 
 fn resolve_project_install_targets(

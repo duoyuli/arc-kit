@@ -25,6 +25,12 @@ impl Drop for CursorGuard<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderUiStream {
+    Stdout,
+    Stderr,
+}
+
 pub fn select_provider(
     providers: &[ProviderInfo],
     active_providers: &HashMap<String, String>,
@@ -34,7 +40,10 @@ pub fn select_provider(
         return Ok(None);
     }
 
-    let term = Term::stderr();
+    let term = match provider_ui_stream(Term::stdout().is_term(), Term::stderr().is_term()) {
+        ProviderUiStream::Stdout => Term::stdout(),
+        ProviderUiStream::Stderr => Term::stderr(),
+    };
     let mut tab = default_tab_index(&tabs);
     let mut rows: Vec<usize> = tabs.iter().map(|tab| tab.default_row).collect();
     let mut scrolls = vec![0usize; tabs.len()];
@@ -134,6 +143,14 @@ pub fn select_provider(
             }
             _ => {}
         }
+    }
+}
+
+fn provider_ui_stream(stdout_is_tty: bool, stderr_is_tty: bool) -> ProviderUiStream {
+    if stdout_is_tty || !stderr_is_tty {
+        ProviderUiStream::Stdout
+    } else {
+        ProviderUiStream::Stderr
     }
 }
 
@@ -293,8 +310,8 @@ mod tests {
     use console::measure_text_width;
 
     use super::{
-        build_provider_tabs, clamp_line_width, default_tab_index, render_provider_line,
-        render_tab_line,
+        ProviderUiStream, build_provider_tabs, clamp_line_width, default_tab_index,
+        provider_ui_stream, render_provider_line, render_tab_line,
     };
 
     fn provider(agent: &str, name: &str, display_name: &str, description: &str) -> ProviderInfo {
@@ -342,6 +359,18 @@ mod tests {
 
         assert_eq!(tabs[1].default_row, 0);
         assert_eq!(default_tab_index(&tabs), 1);
+    }
+
+    #[test]
+    fn provider_ui_prefers_stdout_when_available() {
+        assert_eq!(provider_ui_stream(true, true), ProviderUiStream::Stdout);
+        assert_eq!(provider_ui_stream(true, false), ProviderUiStream::Stdout);
+    }
+
+    #[test]
+    fn provider_ui_falls_back_to_stderr_only_when_stdout_is_not_tty() {
+        assert_eq!(provider_ui_stream(false, true), ProviderUiStream::Stderr);
+        assert_eq!(provider_ui_stream(false, false), ProviderUiStream::Stdout);
     }
 
     #[test]

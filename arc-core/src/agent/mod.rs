@@ -126,7 +126,7 @@ pub static AGENT_SPECS: Lazy<Vec<AgentSpec>> = Lazy::new(|| {
             home_parts: &[".codex"],
             skills_subdir: "skills",
             supports_project_skills: true,
-            project_skills_parts: &[".agents", "skills"],
+            project_skills_parts: &["codex", "skills"],
             provider_kind: Some(ProviderKind::Codex),
             provider_seed: Some(include_str!("../provider/seed/codex.toml")),
             mcp_scope_support: McpScopeSupport::ProjectNative,

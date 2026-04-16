@@ -436,6 +436,8 @@ arc skill install ...
 arc project apply
 ```
 
+项目级 skill 会按 agent 的仓库内原生目录写入，例如 Claude Code 为 `./.claude/skills/<name>`，Codex 为 `./codex/skills/<name>`。
+
 ## 9. MCP 使用
 
 ### 这个功能是干什么的
@@ -623,6 +625,8 @@ arc project edit
 - 自动切换需要的 provider
 - 自动安装项目级 skill
 - 自动写入项目级 MCP 和 subagent
+
+执行前的纯文本预览会按分段列出 `arc.toml` 中要求的 `provider`、`skills`、`mcps` 和 `subagents`，并标明如 `present`、`will install`、`will apply`、`not in catalog` 之类的状态。
 
 第一次在项目中使用时，如果还没有 `arc.toml`，交互式执行：
 

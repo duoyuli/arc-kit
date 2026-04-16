@@ -270,7 +270,7 @@ mod tests {
         let skill_dir = home.path().join(".arc-cli").join("skills").join("my-skill");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "# my-skill\n").unwrap();
-        let codex_skill = cwd.path().join(".agents").join("skills").join("my-skill");
+        let codex_skill = cwd.path().join("codex").join("skills").join("my-skill");
         fs::create_dir_all(codex_skill.parent().unwrap()).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&skill_dir, &codex_skill).unwrap();

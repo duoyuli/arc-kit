@@ -143,6 +143,20 @@ fn project_skills_any_vs_all_when_only_one_agent_has_skill() {
 }
 
 #[test]
+fn codex_uses_project_skill_layout_under_repo_codex_dir() {
+    let codex = agent_spec("codex").unwrap();
+    assert!(codex.supports_project_skills);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    assert_eq!(
+        project_skill_path(&repo, "codex", "demo-skill"),
+        Some(repo.join("codex").join("skills").join("demo-skill"))
+    );
+}
+
+#[test]
 fn kimi_uses_home_and_project_skill_layout() {
     let kimi = agent_spec("kimi").unwrap();
     assert_eq!(kimi.skills_subdir, "skills");
