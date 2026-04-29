@@ -31,6 +31,17 @@ enum ProviderUiStream {
     Stderr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderKeyAction {
+    Cancel,
+    Confirm,
+    PrevRow,
+    NextRow,
+    PrevTab,
+    NextTab,
+    Noop,
+}
+
 pub fn select_provider(
     providers: &[ProviderInfo],
     active_providers: &HashMap<String, String>,
@@ -113,36 +124,50 @@ pub fn select_provider(
         prev_drawn = shown + 3;
         term.flush()?;
 
-        match term.read_key()? {
-            Key::Escape => {
+        match map_provider_key(term.read_key()?) {
+            ProviderKeyAction::Cancel => {
                 clear_drawn_block(&term, prev_drawn)?;
                 term.show_cursor()?;
                 return Ok(None);
             }
-            Key::Enter => {
+            ProviderKeyAction::Confirm => {
                 let provider_idx = current_tab.provider_indexes[rows[tab]];
                 clear_drawn_block(&term, prev_drawn)?;
                 term.show_cursor()?;
                 return Ok(Some(providers[provider_idx].clone()));
             }
-            Key::ArrowUp => {
+            ProviderKeyAction::PrevRow => {
                 rows[tab] = if rows[tab] == 0 {
                     current_rows - 1
                 } else {
                     rows[tab] - 1
                 };
             }
-            Key::ArrowDown => {
+            ProviderKeyAction::NextRow => {
                 rows[tab] = (rows[tab] + 1) % current_rows;
             }
-            Key::ArrowLeft | Key::BackTab => {
+            ProviderKeyAction::PrevTab => {
                 tab = if tab == 0 { tabs.len() - 1 } else { tab - 1 };
             }
-            Key::ArrowRight | Key::Tab => {
+            ProviderKeyAction::NextTab => {
                 tab = (tab + 1) % tabs.len();
             }
-            _ => {}
+            ProviderKeyAction::Noop => {}
         }
+    }
+}
+
+fn map_provider_key(key: Key) -> ProviderKeyAction {
+    match key {
+        Key::Escape | Key::Char('q') | Key::Char('Q') => ProviderKeyAction::Cancel,
+        Key::Enter | Key::Char('\n') | Key::Char('\r') => ProviderKeyAction::Confirm,
+        Key::ArrowUp | Key::Char('k') | Key::Char('K') => ProviderKeyAction::PrevRow,
+        Key::ArrowDown | Key::Char('j') | Key::Char('J') => ProviderKeyAction::NextRow,
+        Key::ArrowLeft | Key::BackTab | Key::Char('h') | Key::Char('H') => {
+            ProviderKeyAction::PrevTab
+        }
+        Key::ArrowRight | Key::Tab | Key::Char('l') | Key::Char('L') => ProviderKeyAction::NextTab,
+        _ => ProviderKeyAction::Noop,
     }
 }
 
@@ -256,9 +281,9 @@ fn render_hint_line(tab: &ProviderTab, provider_count: usize, can_switch_tab: bo
         format!("{provider_count} providers")
     };
     let nav = if can_switch_tab {
-        "←→/tab switch agent  ↑↓ move  ↵ select  esc quit"
+        "←→/tab or h/l switch agent  ↑↓ or j/k move  ↵ select  esc/q quit"
     } else {
-        "↑↓ move  ↵ select  esc quit"
+        "↑↓ or j/k move  ↵ select  esc/q quit"
     };
     format!(
         "  {}",
@@ -307,11 +332,12 @@ mod tests {
     use arc_core::provider::{
         ClaudeProviderConfig, CodexProviderConfig, ProviderInfo, ProviderSettings,
     };
-    use console::measure_text_width;
+    use console::{Key, measure_text_width};
 
     use super::{
-        ProviderUiStream, build_provider_tabs, clamp_line_width, default_tab_index,
-        provider_ui_stream, render_provider_line, render_tab_line,
+        ProviderKeyAction, ProviderUiStream, build_provider_tabs, clamp_line_width,
+        default_tab_index, map_provider_key, provider_ui_stream, render_provider_line,
+        render_tab_line,
     };
 
     fn provider(agent: &str, name: &str, display_name: &str, description: &str) -> ProviderInfo {
@@ -405,5 +431,18 @@ mod tests {
         let clamped = clamp_line_width("0123456789", 5);
 
         assert_eq!(measure_text_width(&clamped), 5);
+    }
+
+    #[test]
+    fn provider_key_map_supports_navigation_fallback_keys() {
+        assert_eq!(map_provider_key(Key::Char('j')), ProviderKeyAction::NextRow);
+        assert_eq!(map_provider_key(Key::Char('k')), ProviderKeyAction::PrevRow);
+        assert_eq!(map_provider_key(Key::Char('h')), ProviderKeyAction::PrevTab);
+        assert_eq!(map_provider_key(Key::Char('l')), ProviderKeyAction::NextTab);
+        assert_eq!(map_provider_key(Key::Char('q')), ProviderKeyAction::Cancel);
+        assert_eq!(
+            map_provider_key(Key::Char('\r')),
+            ProviderKeyAction::Confirm
+        );
     }
 }

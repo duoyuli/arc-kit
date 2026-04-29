@@ -174,6 +174,8 @@ arc provider list
 arc provider use
 ```
 
+交互界面支持 `↑↓` 或 `j/k` 移动，`←→` / `tab` 或 `h/l` 切换 agent，`enter` 选择，`esc` 或 `q` 退出。
+
 指定切换：
 
 ```bash

@@ -18,7 +18,7 @@
 
 **1. Provider 统一管理**
 
-执行 `arc provider use <name> [--agent <agent>]` 可切换 provider profile。交互式模式按 coding agent 分 tab 展示，一次只看一个 agent 的 provider。若需在项目内固定 provider，可在 `arc.toml` 中声明 `[provider]` 后执行 `arc project apply`。切换前会自动备份，便于回滚。
+执行 `arc provider use <name> [--agent <agent>]` 可切换 provider profile。交互式模式按 coding agent 分 tab 展示，一次只看一个 agent 的 provider，支持方向键与 `h/j/k/l` 导航、`q` 退出。若需在项目内固定 provider，可在 `arc.toml` 中声明 `[provider]` 后执行 `arc project apply`。切换前会自动备份，便于回滚。
 其中 Codex 的 `auth-only` provider 会按 provider 名分别保存 `auth.json` 快照；切到代理类 provider 时，`auth.json` 会被重写为仅含 `OPENAI_API_KEY`；切回对应的 auth provider 时，再恢复该 provider 自己的登录态。
 
 **2. Skill 一处管理，多处使用**
