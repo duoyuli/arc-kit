@@ -17,7 +17,6 @@ Thumbs.db
 
 # coding agent
 .claude/
-.codex/
 .cursor/
 .sisyphus/
 .gemini/
@@ -25,6 +24,7 @@ Thumbs.db
 .opencode/
 .agents/
 .omx/
+.codex/
 
 # build output
 target/
