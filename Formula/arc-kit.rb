@@ -1,5 +1,5 @@
 class ArcKit < Formula
-  desc "CLI tool for managing coding agent capabilities"
+  desc "CLI tool for managing coding agent providers, skills, and markets"
   homepage "https://github.com/duoyuli/arc-kit"
   license "MIT"
   version "2026.4.30"

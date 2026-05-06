@@ -237,8 +237,6 @@ fn install_one_json(
                 name: skill.name.clone(),
                 agent: t.clone(),
                 status: "already_installed".to_string(),
-                desired_scope: None,
-                applied_scope: None,
                 reason: None,
             });
         }
@@ -269,8 +267,6 @@ fn install_one_json(
                         name: skill.name.clone(),
                         agent: agent.clone(),
                         status: "installed".to_string(),
-                        desired_scope: None,
-                        applied_scope: None,
                         reason: None,
                     });
                 }
@@ -281,8 +277,6 @@ fn install_one_json(
                     name: skill.name.clone(),
                     agent: "".to_string(),
                     status: format!("error: {}", e.message),
-                    desired_scope: None,
-                    applied_scope: None,
                     reason: None,
                 });
             }

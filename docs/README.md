@@ -14,6 +14,6 @@ docs/
 
 | 路径 | 说明 |
 |------|------|
-| [user/guide.md](user/guide.md) | 面向终端用户的一份完整产品使用说明书，覆盖安装、状态、Provider、Market、Skill、MCP、Subagent、项目配置与补全 |
+| [user/guide.md](user/guide.md) | 面向终端用户的一份完整产品使用说明书，覆盖安装、状态、Provider、Market、Skill、项目配置与补全 |
 | [developer/design.md](developer/design.md) | 交互式与非交互式、JSON 语义、设计规则、实现对照与缺口 |
 | [developer/development.md](developer/development.md) | 贡献流程、提交与回归、Cargo workspace、内置资源规范 |

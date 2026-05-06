@@ -10,7 +10,7 @@ pub enum OutputFormat {
 #[derive(Parser)]
 #[command(
     name = "arc",
-    about = "Manage coding agent configuration and capabilities",
+    about = "Manage coding agent providers, skills, markets, and project configuration",
     version = env!("CARGO_PKG_VERSION"),
 )]
 pub struct Cli {
@@ -51,16 +51,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<SkillCommand>,
     },
-    #[command(about = "Manage MCP servers")]
-    Mcp {
-        #[command(subcommand)]
-        command: Option<McpCommand>,
-    },
-    #[command(about = "Manage subagents")]
-    Subagent {
-        #[command(subcommand)]
-        command: Option<SubagentCommand>,
-    },
     #[command(about = "Manage providers")]
     Provider {
         #[command(subcommand)]
@@ -91,10 +81,10 @@ pub struct ProjectApplyArgs {
 #[derive(Subcommand)]
 pub enum ProjectCommand {
     #[command(
-        about = "Create or update arc.toml from the catalog, switch provider, and install project capabilities"
+        about = "Create or update arc.toml from the catalog, switch provider, and install project skills"
     )]
     Apply(ProjectApplyArgs),
-    #[command(about = "Edit project skill/MCP/subagent requirements in arc.toml (interactive)")]
+    #[command(about = "Edit project skill requirements in arc.toml (interactive)")]
     Edit,
 }
 
@@ -126,190 +116,6 @@ pub enum SkillCommand {
     Uninstall(SkillUninstallArgs),
     #[command(about = "Show skill details")]
     Info(SkillInfoArgs),
-}
-
-#[derive(Subcommand)]
-pub enum McpCommand {
-    #[command(about = "List global MCP definitions (built-in presets and user registry)")]
-    List,
-    #[command(about = "Show global MCP details")]
-    Info(McpInfoArgs),
-    #[command(
-        about = "Install or update a global MCP from a preset name, or pass --transport for a custom definition"
-    )]
-    Install(McpInstallArgs),
-    #[command(
-        about = "Add or update a custom global MCP (full definition; use for servers not in presets)"
-    )]
-    Define(McpDefineArgs),
-    #[command(about = "Remove a user MCP from the registry (built-in presets cannot be removed)")]
-    Uninstall(McpUninstallArgs),
-}
-
-#[derive(Args)]
-pub struct McpInfoArgs {
-    #[arg(help = "MCP name (omit for interactive mode)")]
-    pub name: Option<String>,
-    #[arg(long, help = "Print secret env/header values (default: redacted)")]
-    pub show_secrets: bool,
-}
-
-#[derive(Args)]
-pub struct McpInstallArgs {
-    #[arg(help = "MCP name (omit for interactive mode)")]
-    pub name: Option<String>,
-    #[arg(short, long = "agent", value_name = "AGENT")]
-    pub agent: Vec<String>,
-    /// Custom install: set transport and command/url (omit to use a preset by name)
-    #[arg(long, value_enum)]
-    pub transport: Option<McpTransportArg>,
-    #[arg(long)]
-    pub command: Option<String>,
-    #[arg(long = "arg", allow_hyphen_values = true)]
-    pub arg: Vec<String>,
-    #[arg(long = "env", value_name = "KEY=VALUE")]
-    pub env: Vec<String>,
-    #[arg(long)]
-    pub cwd: Option<String>,
-    #[arg(long = "env-file")]
-    pub env_file: Option<String>,
-    #[arg(long)]
-    pub url: Option<String>,
-    #[arg(long = "header", value_name = "KEY=VALUE")]
-    pub header: Vec<String>,
-    #[arg(long)]
-    pub timeout: Option<u64>,
-    #[arg(long = "startup-timeout-sec")]
-    pub startup_timeout_sec: Option<u64>,
-    #[arg(long = "tool-timeout-sec")]
-    pub tool_timeout_sec: Option<u64>,
-    #[arg(long)]
-    pub enabled: bool,
-    #[arg(long)]
-    pub required: bool,
-    #[arg(long)]
-    pub trust: bool,
-    #[arg(long = "include-tool")]
-    pub include_tool: Vec<String>,
-    #[arg(long = "exclude-tool")]
-    pub exclude_tool: Vec<String>,
-    #[arg(long = "oauth-client-id")]
-    pub oauth_client_id: Option<String>,
-    #[arg(long = "oauth-client-secret")]
-    pub oauth_client_secret: Option<String>,
-    #[arg(long = "oauth-scope")]
-    pub oauth_scope: Option<String>,
-    #[arg(long = "oauth-callback-port")]
-    pub oauth_callback_port: Option<u16>,
-    #[arg(long = "oauth-auth-server-metadata-url")]
-    pub oauth_auth_server_metadata_url: Option<String>,
-    #[arg(long = "oauth-disabled")]
-    pub oauth_disabled: bool,
-    #[arg(long)]
-    pub description: Option<String>,
-}
-
-#[derive(Args)]
-pub struct McpDefineArgs {
-    #[arg(help = "MCP name")]
-    pub name: String,
-    #[arg(short, long = "agent", value_name = "AGENT")]
-    pub agent: Vec<String>,
-    #[arg(long, value_enum)]
-    pub transport: McpTransportArg,
-    #[arg(long)]
-    pub command: Option<String>,
-    #[arg(long = "arg", allow_hyphen_values = true)]
-    pub arg: Vec<String>,
-    #[arg(long = "env", value_name = "KEY=VALUE")]
-    pub env: Vec<String>,
-    #[arg(long)]
-    pub cwd: Option<String>,
-    #[arg(long = "env-file")]
-    pub env_file: Option<String>,
-    #[arg(long)]
-    pub url: Option<String>,
-    #[arg(long = "header", value_name = "KEY=VALUE")]
-    pub header: Vec<String>,
-    #[arg(long)]
-    pub timeout: Option<u64>,
-    #[arg(long = "startup-timeout-sec")]
-    pub startup_timeout_sec: Option<u64>,
-    #[arg(long = "tool-timeout-sec")]
-    pub tool_timeout_sec: Option<u64>,
-    #[arg(long)]
-    pub enabled: bool,
-    #[arg(long)]
-    pub required: bool,
-    #[arg(long)]
-    pub trust: bool,
-    #[arg(long = "include-tool")]
-    pub include_tool: Vec<String>,
-    #[arg(long = "exclude-tool")]
-    pub exclude_tool: Vec<String>,
-    #[arg(long = "oauth-client-id")]
-    pub oauth_client_id: Option<String>,
-    #[arg(long = "oauth-client-secret")]
-    pub oauth_client_secret: Option<String>,
-    #[arg(long = "oauth-scope")]
-    pub oauth_scope: Option<String>,
-    #[arg(long = "oauth-callback-port")]
-    pub oauth_callback_port: Option<u16>,
-    #[arg(long = "oauth-auth-server-metadata-url")]
-    pub oauth_auth_server_metadata_url: Option<String>,
-    #[arg(long = "oauth-disabled")]
-    pub oauth_disabled: bool,
-    #[arg(long)]
-    pub description: Option<String>,
-}
-
-#[derive(Args)]
-pub struct McpUninstallArgs {
-    #[arg(help = "MCP name (omit for interactive mode)")]
-    pub name: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
-pub enum McpTransportArg {
-    Stdio,
-    Sse,
-    StreamableHttp,
-}
-
-#[derive(Subcommand)]
-pub enum SubagentCommand {
-    #[command(about = "List global subagent definitions")]
-    List,
-    #[command(about = "Show global subagent details")]
-    Info(SubagentInfoArgs),
-    #[command(about = "Install or update a global subagent definition")]
-    Install(SubagentInstallArgs),
-    #[command(about = "Remove a global subagent definition")]
-    Uninstall(SubagentUninstallArgs),
-}
-
-#[derive(Args)]
-pub struct SubagentInfoArgs {
-    #[arg(help = "Subagent name (omit for interactive mode)")]
-    pub name: Option<String>,
-}
-
-#[derive(Args)]
-pub struct SubagentInstallArgs {
-    #[arg(help = "Subagent name (omit for interactive mode)")]
-    pub name: Option<String>,
-    #[arg(short, long = "agent", value_name = "AGENT")]
-    pub agent: Vec<String>,
-    #[arg(long)]
-    pub description: Option<String>,
-    #[arg(long = "prompt-file", value_name = "PATH")]
-    pub prompt_file: Option<String>,
-}
-
-#[derive(Args)]
-pub struct SubagentUninstallArgs {
-    #[arg(help = "Subagent name (omit for interactive mode)")]
-    pub name: Option<String>,
 }
 
 #[derive(Args)]

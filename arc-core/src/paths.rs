@@ -82,14 +82,6 @@ impl ArcPaths {
         self.arc_home.join("skills")
     }
 
-    pub fn mcps_dir(&self) -> PathBuf {
-        self.arc_home.join("mcps")
-    }
-
-    pub fn subagents_dir(&self) -> PathBuf {
-        self.arc_home.join("subagents")
-    }
-
     pub fn tracking_dir(&self) -> PathBuf {
         self.arc_home.join("tracking")
     }
@@ -105,8 +97,6 @@ impl ArcPaths {
     pub fn ensure_arc_home(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.markets_repo_root())?;
         std::fs::create_dir_all(self.local_skills_dir())?;
-        std::fs::create_dir_all(self.mcps_dir())?;
-        std::fs::create_dir_all(self.subagents_dir())?;
         std::fs::create_dir_all(self.tracking_dir())?;
         std::fs::create_dir_all(self.state_dir())?;
         Ok(())

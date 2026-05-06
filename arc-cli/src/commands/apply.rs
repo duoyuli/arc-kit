@@ -1,7 +1,6 @@
 use std::env;
 use std::io::{self, IsTerminal};
 
-use arc_core::capability::{AppliedScope, CapabilityTargetState, DesiredScope};
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::models::ResourceKind;
@@ -100,11 +99,6 @@ pub fn run(
             style("Run `arc market add <url>` to add a market source containing this skill.").dim()
         );
     }
-    render_missing_project_capability_refs(&plan.effective);
-
-    render_capability_results(&execution);
-    render_removed_capabilities(&execution);
-
     println!();
 
     if !execution.has_issues(&plan.effective) {
@@ -127,22 +121,6 @@ fn print_project_requirements_status(
         printed_sections += 1;
     }
     if print_required_skills_status(effective) {
-        printed_sections += 1;
-    }
-    if print_required_named_status(
-        "mcps",
-        &effective.required_mcps,
-        &effective.missing_mcps_unavailable,
-        "will apply",
-    ) {
-        printed_sections += 1;
-    }
-    if print_required_named_status(
-        "subagents",
-        &effective.required_subagents,
-        &effective.missing_subagents_unavailable,
-        "will apply",
-    ) {
         printed_sections += 1;
     }
 
@@ -197,33 +175,6 @@ fn print_required_skills_status(effective: &EffectiveConfig) -> bool {
             format!("{}", style("will install").cyan())
         } else {
             format!("{}", style("not in catalog").yellow())
-        };
-        println!("    {}  {}", style(name).bold(), status_line);
-    }
-    true
-}
-
-fn print_required_named_status(
-    title: &str,
-    required: &[String],
-    unavailable: &[String],
-    install_status: &str,
-) -> bool {
-    if required.is_empty() {
-        return false;
-    }
-
-    println!();
-    println!(
-        "  {} {}",
-        style(title).bold(),
-        style("(required in arc.toml)").dim()
-    );
-    for name in required {
-        let status_line = if unavailable.contains(name) {
-            format!("{}", style("not in catalog").yellow())
-        } else {
-            format!("{}", style(install_status).cyan())
         };
         println!("    {}  {}", style(name).bold(), status_line);
     }
@@ -395,58 +346,9 @@ fn render_skill_results(execution: &ProjectApplyExecution) {
     }
 }
 
-fn render_capability_results(execution: &ProjectApplyExecution) {
-    for item in &execution.capability_results {
-        let kind = match item.kind {
-            ResourceKind::Mcp => "mcp",
-            ResourceKind::SubAgent => "subagent",
-            _ => "resource",
-        };
-        render_capability_target(kind, &item.name, &item.status);
-    }
-}
-
-fn render_missing_project_capability_refs(effective: &EffectiveConfig) {
-    for name in &effective.missing_mcps_unavailable {
-        println!(
-            "  {} mcp {} not found in merged catalog, skipped.",
-            style("!").yellow(),
-            style(name).bold()
-        );
-        println!(
-            "    {}",
-            style("Add it to the global registry with `arc mcp define` or `arc mcp install`.")
-                .dim()
-        );
-    }
-
-    for name in &effective.missing_subagents_unavailable {
-        println!(
-            "  {} subagent {} not found in merged catalog, skipped.",
-            style("!").yellow(),
-            style(name).bold()
-        );
-        println!(
-            "    {}",
-            style("Add it to the global registry with `arc subagent install`.").dim()
-        );
-    }
-}
-
-fn render_removed_capabilities(execution: &ProjectApplyExecution) {
-    for record in &execution.removed_capabilities {
-        println!(
-            "  {} {} -> {} (removed)",
-            style("-").green(),
-            style(&record.name).bold(),
-            agent_display_name(&record.agent)
-        );
-    }
-}
-
 fn execution_to_write_items(
     execution: &ProjectApplyExecution,
-    effective: &EffectiveConfig,
+    _effective: &EffectiveConfig,
 ) -> Vec<WriteResultItem> {
     let mut items = Vec::new();
 
@@ -460,8 +362,6 @@ fn execution_to_write_items(
                 provider_switch.agents.join(",")
             },
             status: "provider_switched".to_string(),
-            desired_scope: None,
-            applied_scope: None,
             reason: None,
         });
     }
@@ -475,8 +375,6 @@ fn execution_to_write_items(
                         name: item.name.clone(),
                         agent: agent.clone(),
                         status: "installed".to_string(),
-                        desired_scope: None,
-                        applied_scope: None,
                         reason: None,
                     });
                 }
@@ -486,8 +384,6 @@ fn execution_to_write_items(
                 name: item.name.clone(),
                 agent: String::new(),
                 status: "not_found".to_string(),
-                desired_scope: None,
-                applied_scope: None,
                 reason: None,
             }),
             ProjectSkillApplyStatus::Failed { message } => items.push(WriteResultItem {
@@ -495,110 +391,12 @@ fn execution_to_write_items(
                 name: item.name.clone(),
                 agent: String::new(),
                 status: format!("error: {message}"),
-                desired_scope: None,
-                applied_scope: None,
                 reason: None,
             }),
         }
     }
 
-    items.extend(
-        execution
-            .capability_results
-            .iter()
-            .map(|item| WriteResultItem {
-                resource_kind: Some(match item.kind {
-                    ResourceKind::Mcp => "mcp".to_string(),
-                    ResourceKind::SubAgent => "subagent".to_string(),
-                    _ => "resource".to_string(),
-                }),
-                name: item.name.clone(),
-                agent: item.status.agent.clone(),
-                status: format!("{:?}", item.status.status).to_ascii_lowercase(),
-                desired_scope: Some(item.status.desired_scope),
-                applied_scope: Some(item.status.applied_scope),
-                reason: item.status.reason.clone(),
-            }),
-    );
-
-    items.extend(
-        execution
-            .removed_capabilities
-            .iter()
-            .map(|record| WriteResultItem {
-                resource_kind: Some(match record.kind {
-                    ResourceKind::Mcp => "mcp".to_string(),
-                    ResourceKind::SubAgent => "subagent".to_string(),
-                    _ => "resource".to_string(),
-                }),
-                name: record.name.clone(),
-                agent: record.agent.clone(),
-                status: "removed".to_string(),
-                desired_scope: None,
-                applied_scope: Some(match record.applied_scope {
-                    arc_core::agent::AppliedResourceScope::Project => {
-                        arc_core::capability::AppliedScope::Project
-                    }
-                    arc_core::agent::AppliedResourceScope::Global => {
-                        arc_core::capability::AppliedScope::Global
-                    }
-                }),
-                reason: None,
-            }),
-    );
-
-    items.extend(
-        effective
-            .missing_mcps_unavailable
-            .iter()
-            .map(|name| WriteResultItem {
-                resource_kind: Some("mcp".to_string()),
-                name: name.clone(),
-                agent: String::new(),
-                status: "not_found".to_string(),
-                desired_scope: Some(DesiredScope::Project),
-                applied_scope: Some(AppliedScope::None),
-                reason: Some("not_in_catalog".to_string()),
-            }),
-    );
-
-    items.extend(
-        effective
-            .missing_subagents_unavailable
-            .iter()
-            .map(|name| WriteResultItem {
-                resource_kind: Some("subagent".to_string()),
-                name: name.clone(),
-                agent: String::new(),
-                status: "not_found".to_string(),
-                desired_scope: Some(DesiredScope::Project),
-                applied_scope: Some(AppliedScope::None),
-                reason: Some("not_in_catalog".to_string()),
-            }),
-    );
-
     items
-}
-
-fn render_capability_target(
-    kind: &str,
-    name: &str,
-    item: &arc_core::capability::CapabilityTargetStatus,
-) {
-    let marker = match item.status {
-        CapabilityTargetState::Applied => style("+").green(),
-        CapabilityTargetState::Skipped => style("!").yellow(),
-        CapabilityTargetState::Failed => style("x").red(),
-    };
-    let detail = item.reason.as_deref().unwrap_or("ok");
-    println!(
-        "  {} {} {} -> {} ({})",
-        marker,
-        style(kind).cyan(),
-        style(name).bold(),
-        agent_display_name(&item.agent),
-        style(detail).dim()
-    );
 }
 
 fn item_has_issue(item: &WriteResultItem) -> bool {

@@ -1,37 +1,25 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 mod actions;
 mod agents;
-mod capabilities;
 mod catalog;
 mod project_status;
 
-use crate::agent::{McpScopeSupport, SubagentSupport, agent_spec, project_skill_path};
-use crate::capability::{
-    AppliedScope, CapabilityStatusEntry, CapabilityTargetState, CapabilityTargetStatus,
-    DesiredScope, McpApplyPlan, ResourceResolution, SourceScope, SubagentApplyPlan,
-    capability_install_present, load_global_subagents, preview_mcp_plan, preview_subagent_plan,
-    resolve_declared_targets, tracking_record_for_target, validate_mcp_definition,
-    validate_subagent_targets,
-};
+use crate::agent::{agent_spec, project_skill_path};
 use crate::detect::DetectCache;
 use crate::engine::{InstallEngine, InstalledResource};
 use crate::market::sources::MarketSourceRegistry;
-use crate::mcp_registry::load_user_registry_mcps;
 use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
-use crate::project::{
-    find_project_config, load_project_config, resolve_project_capability_requirements,
-};
+use crate::project::{find_project_config, load_project_config};
 use crate::provider::{load_providers_for_agent, read_active_provider, supports_provider_agent};
 use crate::skill::SkillRegistry;
 
 use actions::collect_actions;
 use agents::{collect_agents, count_skills_by_agent};
-use capabilities::collect_capabilities;
 use catalog::collect_catalog;
 use project_status::collect_project;
 
@@ -40,8 +28,6 @@ pub struct StatusSnapshot {
     pub project: ProjectStatusSection,
     pub agents: Vec<AgentRuntimeStatus>,
     pub catalog: CatalogStatus,
-    pub mcps: Vec<CapabilityStatusEntry>,
-    pub subagents: Vec<CapabilityStatusEntry>,
     pub actions: Vec<RecommendedAction>,
 }
 
@@ -145,9 +131,6 @@ pub struct AgentRuntimeStatus {
     pub global_skill_count: usize,
     pub supports_project_skills: bool,
     pub supports_provider: bool,
-    pub mcp_scope_supported: String,
-    pub mcp_transports_supported: Vec<String>,
-    pub subagent_supported: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -186,15 +169,12 @@ pub fn collect_status(paths: &ArcPaths, cwd: &Path, cache: &DetectCache) -> Stat
     let agents = collect_agents(paths, cache, &skill_counts);
     let catalog = collect_catalog(paths, installed.len());
     let project = collect_project(paths, cwd, cache, &agents);
-    let (mcps, subagents) = collect_capabilities(paths, cwd, cache);
-    let actions = collect_actions(&project, &agents, &mcps, &subagents);
+    let actions = collect_actions(&project, &agents);
 
     StatusSnapshot {
         project,
         agents,
         catalog,
-        mcps,
-        subagents,
         actions,
     }
 }
@@ -270,7 +250,7 @@ mod tests {
         let skill_dir = home.path().join(".arc-cli").join("skills").join("my-skill");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "# my-skill\n").unwrap();
-        let codex_skill = cwd.path().join("codex").join("skills").join("my-skill");
+        let codex_skill = cwd.path().join(".codex").join("skills").join("my-skill");
         fs::create_dir_all(codex_skill.parent().unwrap()).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&skill_dir, &codex_skill).unwrap();
@@ -296,36 +276,6 @@ mod tests {
         assert_eq!(
             snapshot.project.skills[0].missing_on_agents,
             vec!["claude".to_string()]
-        );
-    }
-
-    #[test]
-    fn collect_status_marks_missing_project_subagent_reference_as_failed() {
-        let home = tempdir().unwrap();
-        let cwd = tempdir().unwrap();
-        fs::write(
-            cwd.path().join("arc.toml"),
-            "[subagents]\nrequire = [\"reviewer\"]\n",
-        )
-        .unwrap();
-        let paths = ArcPaths::with_user_home(home.path());
-        let cache =
-            DetectCache::from_map(BTreeMap::from([("codex".to_string(), fake_agent("codex"))]));
-
-        let snapshot = collect_status(&paths, cwd.path(), &cache);
-
-        let entry = snapshot
-            .subagents
-            .iter()
-            .find(|entry| entry.name == "reviewer" && entry.source_scope == SourceScope::Project)
-            .expect("project subagent entry");
-        assert_eq!(entry.targets.len(), 1);
-        assert_eq!(entry.targets[0].status, CapabilityTargetState::Failed);
-        assert!(
-            entry.targets[0]
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("not_in_catalog"))
         );
     }
 

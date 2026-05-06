@@ -151,8 +151,6 @@ fn update(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
                     name: f.skill.clone(),
                     agent: f.agent.clone().unwrap_or_default(),
                     status: format!("failed: {}", f.message),
-                    desired_scope: None,
-                    applied_scope: None,
                     reason: None,
                 });
             }

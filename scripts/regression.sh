@@ -121,8 +121,6 @@ run_arc_in "$TMP_CWD" --help >/dev/null
 run_arc_in "$TMP_CWD" version >/dev/null
 run_arc_in "$TMP_CWD" status >/dev/null
 require_exit_code 0 "status json in empty cwd" "$TMP_CWD" status --format json
-require_stdout '"mcps"' "status json exposes mcps"
-require_stdout '"subagents"' "status json exposes subagents"
 require_stdout '"actions"' "status json exposes actions"
 run_arc_in "$TMP_CWD" project --help >/dev/null
 run_arc_in "$TMP_CWD" project apply --help >/dev/null
@@ -130,21 +128,19 @@ run_arc_in "$TMP_CWD" project edit --help >/dev/null
 require_exit_code 0 "project edit json returns structured failure" "$TMP_CWD" project edit --format json
 require_stdout '"ok": false' "project edit json exposes structured failure"
 run_arc_in "$TMP_CWD" skill list >/dev/null
-run_arc_in "$TMP_CWD" mcp list >/dev/null
-run_arc_in "$TMP_CWD" subagent list >/dev/null
 run_arc_in "$TMP_CWD" market list >/dev/null
 run_arc_in "$TMP_CWD" provider list >/dev/null
 run_arc_in "$TMP_CWD" completion zsh >/dev/null
+require_exit_code 2 "mcp command is removed" "$TMP_CWD" mcp list
+require_stderr "unrecognized subcommand 'mcp'" "mcp command is removed"
+require_exit_code 2 "subagent command is removed" "$TMP_CWD" subagent list
+require_stderr "unrecognized subcommand 'subagent'" "subagent command is removed"
 
 # JSON non-interactive argument requirements.
 require_exit_code 1 "skill install json requires name" "$TMP_CWD" skill install --format json
 require_stderr "Skill name required" "skill install json requires name"
 require_exit_code 1 "skill uninstall json requires name" "$TMP_CWD" skill uninstall --format json
 require_stderr "Skill name required" "skill uninstall json requires name"
-require_exit_code 1 "mcp uninstall json requires name" "$TMP_CWD" mcp uninstall --format json
-require_stderr "MCP name required" "mcp uninstall json requires name"
-require_exit_code 1 "subagent uninstall json requires name" "$TMP_CWD" subagent uninstall --format json
-require_stderr "Subagent name required" "subagent uninstall json requires name"
 require_exit_code 1 "provider use json requires name" "$TMP_CWD" provider use --format json
 require_stderr "Provider name required" "provider use json requires name"
 
@@ -152,95 +148,15 @@ require_stderr "Provider name required" "provider use json requires name"
 require_exit_code 0 "skill info missing returns json error" "$TMP_CWD" skill info missing --format json
 require_stdout '"ok": false' "skill info missing returns json error"
 require_stdout '"error": "skill '\''missing'\'' not found\."' "skill info missing error message"
-require_exit_code 0 "mcp info missing returns json error" "$TMP_CWD" mcp info missing --format json
-require_stdout '"ok": false' "mcp info missing returns json error"
-require_stdout '"error": "mcp '\''missing'\'' not found"' "mcp info missing error message"
-require_exit_code 0 "subagent info missing returns json error" "$TMP_CWD" subagent info missing --format json
-require_stdout '"ok": false' "subagent info missing returns json error"
-require_stdout '"error": "subagent '\''missing'\'' not found"' "subagent info missing error message"
 
-# Project capability retarget cleanup.
-PROJ_RETARGET="$TMP_ROOT/project-retarget"
-mkdir -p "$PROJ_RETARGET"
-printf '# reviewer\n' >"$PROJ_RETARGET/reviewer.md"
-mkdir -p "$TMP_HOME/.arc-cli/mcps" "$TMP_HOME/.arc-cli/subagents"
-cat >"$TMP_HOME/.arc-cli/mcps/registry.toml" <<'EOF'
-registry_version = 1
-
-[[mcps]]
-name = "filesystem"
-targets = ["claude", "codex"]
-transport = "stdio"
-command = "npx"
-EOF
-cat >"$TMP_HOME/.arc-cli/subagents/reviewer.toml" <<'EOF'
-name = "reviewer"
-description = "Repository reviewer"
-targets = ["claude", "codex"]
-prompt_file = "ignored.md"
-EOF
-cp "$PROJ_RETARGET/reviewer.md" "$TMP_HOME/.arc-cli/subagents/reviewer.md"
-cat >"$PROJ_RETARGET/arc.toml" <<'EOF'
-[mcps]
-require = ["filesystem"]
-
-[subagents]
-require = ["reviewer"]
-EOF
-run_arc_in "$PROJ_RETARGET" project apply >/dev/null
-cat >"$TMP_HOME/.arc-cli/mcps/registry.toml" <<'EOF'
-registry_version = 1
-
-[[mcps]]
-name = "filesystem"
-targets = ["claude"]
-transport = "stdio"
-command = "npx"
-EOF
-cat >"$TMP_HOME/.arc-cli/subagents/reviewer.toml" <<'EOF'
-name = "reviewer"
-description = "Repository reviewer"
-targets = ["claude"]
-prompt_file = "ignored.md"
-EOF
-run_arc_in "$PROJ_RETARGET" project apply >/dev/null
-if [ -e "$PROJ_RETARGET/.codex/agents/reviewer.toml" ]; then
-  echo "Expected codex project subagent to be removed after target shrink" >&2
-  exit 1
-fi
-if [ -f "$PROJ_RETARGET/.codex/config.toml" ] && rg -q 'filesystem' "$PROJ_RETARGET/.codex/config.toml"; then
-  echo "Expected codex MCP config to be removed after target shrink" >&2
-  cat "$PROJ_RETARGET/.codex/config.toml" >&2
-  exit 1
-fi
-test -f "$PROJ_RETARGET/.claude/agents/reviewer.md"
-rg -q 'filesystem' "$PROJ_RETARGET/.mcp.json"
-
-# Project global-only agent skip + status reflection.
-PROJ_GLOBAL_ONLY="$TMP_ROOT/project-global-only"
-mkdir -p "$PROJ_GLOBAL_ONLY"
-cat >"$TMP_HOME/.arc-cli/mcps/registry.toml" <<'EOF'
-registry_version = 1
-
-[[mcps]]
-name = "github"
-targets = ["kimi"]
-transport = "streamable_http"
-url = "https://api.github.com/mcp"
-EOF
-cat >"$PROJ_GLOBAL_ONLY/arc.toml" <<'EOF'
+# Removed project resource sections are rejected by arc.toml parsing.
+PROJ_REMOVED_RESOURCE="$TMP_ROOT/project-removed-resource"
+mkdir -p "$PROJ_REMOVED_RESOURCE"
+cat >"$PROJ_REMOVED_RESOURCE/arc.toml" <<'EOF'
 [mcps]
 require = ["github"]
 EOF
-require_exit_code 0 "project apply global-only skip json" "$PROJ_GLOBAL_ONLY" project apply --format json
-require_stdout '"resource_kind": "mcp"' "project apply json reports mcp item"
-require_stdout '"status": "skipped"' "project apply json reports skipped item"
-require_stdout '"reason": "global_only_agent"' "project apply json reports global-only skip"
-require_exit_code 0 "status json reflects project mcp entry" "$PROJ_GLOBAL_ONLY" status --format json
-require_stdout '"mcps"' "status json has mcps module"
-require_stdout '"subagents"' "status json has subagents module"
-require_stdout '"actions"' "status json has actions module"
-require_stdout '"name": "github"' "status json reports project mcp"
-require_stdout '"reason": "global_only_agent"' "status json reflects project skip reason"
+require_exit_code 1 "project apply rejects removed mcp section" "$PROJ_REMOVED_RESOURCE" project apply
+require_stderr 'unknown field "mcps"' "project apply rejects removed mcp section"
 
 echo "==> All regression checks passed."

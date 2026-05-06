@@ -3,8 +3,6 @@ use super::*;
 pub(super) fn collect_actions(
     project: &ProjectStatusSection,
     agents: &[AgentRuntimeStatus],
-    mcps: &[CapabilityStatusEntry],
-    subagents: &[CapabilityStatusEntry],
 ) -> Vec<RecommendedAction> {
     let mut actions = Vec::new();
 
@@ -79,35 +77,6 @@ pub(super) fn collect_actions(
             severity: ActionSeverity::Info,
             message: "Install a supported coding agent to get started.".to_string(),
             command: None,
-        });
-    }
-
-    let project_capability_issue = mcps
-        .iter()
-        .chain(subagents.iter())
-        .filter(|entry| entry.source_scope == SourceScope::Project)
-        .flat_map(|entry| entry.targets.iter())
-        .any(|target| target.status != CapabilityTargetState::Applied);
-    if project_capability_issue {
-        actions.push(RecommendedAction {
-            severity: ActionSeverity::Warn,
-            message: "Project MCP/subagent rollout has failures, drift, or unsupported targets."
-                .to_string(),
-            command: Some("arc project apply".to_string()),
-        });
-    }
-
-    let global_capability_issue = mcps
-        .iter()
-        .chain(subagents.iter())
-        .filter(|entry| entry.source_scope == SourceScope::Global)
-        .flat_map(|entry| entry.targets.iter())
-        .any(|target| target.status == CapabilityTargetState::Failed);
-    if global_capability_issue {
-        actions.push(RecommendedAction {
-            severity: ActionSeverity::Warn,
-            message: "Global MCP/subagent state has invalid or drifted installs.".to_string(),
-            command: Some("arc status --format json".to_string()),
         });
     }
 

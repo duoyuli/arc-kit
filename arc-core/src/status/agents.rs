@@ -34,36 +34,6 @@ pub(super) fn collect_agents(
                 global_skill_count: skill_counts.get(agent_id).copied().unwrap_or(0),
                 supports_project_skills: spec.is_some_and(|item| item.supports_project_skills),
                 supports_provider: supports_provider_agent(agent_id),
-                mcp_scope_supported: spec
-                    .map(|item| match item.mcp_scope_support {
-                        McpScopeSupport::ProjectNative => "project_native",
-                        McpScopeSupport::GlobalOnly => "global_only",
-                        McpScopeSupport::Unsupported => "unsupported",
-                    })
-                    .unwrap_or("unsupported")
-                    .to_string(),
-                mcp_transports_supported: spec
-                    .map(|item| {
-                        let mut transports = Vec::new();
-                        if item.mcp_transport_support.supports_stdio {
-                            transports.push("stdio".to_string());
-                        }
-                        if item.mcp_transport_support.supports_sse {
-                            transports.push("sse".to_string());
-                        }
-                        if item.mcp_transport_support.supports_streamable_http {
-                            transports.push("streamable_http".to_string());
-                        }
-                        transports
-                    })
-                    .unwrap_or_default(),
-                subagent_supported: spec
-                    .map(|item| match item.subagent_support {
-                        SubagentSupport::Native => "native",
-                        SubagentSupport::Unsupported => "unsupported",
-                    })
-                    .unwrap_or("unsupported")
-                    .to_string(),
             }
         })
         .collect()

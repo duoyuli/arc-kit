@@ -88,14 +88,6 @@ fn resource_install_subdir_falls_back_to_kind_str_for_unknown_agent() {
 }
 
 #[test]
-fn resource_install_subdir_non_skill_uses_as_str() {
-    assert_eq!(
-        resource_install_subdir(&ResourceKind::SubAgent, "claude"),
-        "subagent"
-    );
-}
-
-#[test]
 fn coding_agent_spec_carries_install_strategy_and_provider_metadata() {
     let codex = agent_spec("codex").unwrap();
     assert_eq!(codex.skill_install_strategy, SkillInstallStrategy::Symlink);
@@ -143,7 +135,7 @@ fn project_skills_any_vs_all_when_only_one_agent_has_skill() {
 }
 
 #[test]
-fn codex_uses_project_skill_layout_under_repo_codex_dir() {
+fn codex_uses_project_skill_layout_under_repo_dot_codex_dir() {
     let codex = agent_spec("codex").unwrap();
     assert!(codex.supports_project_skills);
 
@@ -152,7 +144,7 @@ fn codex_uses_project_skill_layout_under_repo_codex_dir() {
     fs::create_dir_all(&repo).unwrap();
     assert_eq!(
         project_skill_path(&repo, "codex", "demo-skill"),
-        Some(repo.join("codex").join("skills").join("demo-skill"))
+        Some(repo.join(".codex").join("skills").join("demo-skill"))
     );
 }
 

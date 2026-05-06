@@ -1,4 +1,4 @@
-//! Interactive flows for `arc.toml` (create / edit). Project capability installation is done by
+//! Interactive flows for `arc.toml` (create / edit). Project skill installation is done by
 //! `arc project apply`.
 
 use std::path::Path;
@@ -6,15 +6,13 @@ use std::path::Path;
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::market::sources::MarketSourceRegistry;
-use arc_core::mcp_registry::load_merged_mcp_catalog;
 use arc_core::models::SkillOrigin;
 use arc_core::paths::ArcPaths;
 use arc_core::project::{
-    MarketEntry, McpsSection, ProjectConfig, SkillsSection, SubagentsSection, find_project_config,
-    load_project_config, write_project_config,
+    MarketEntry, ProjectConfig, SkillsSection, find_project_config, load_project_config,
+    write_project_config,
 };
 use arc_core::skill::SkillRegistry;
-use arc_core::subagent_registry::load_merged_subagent_catalog;
 use console::style;
 
 /// Create `arc.toml` in `cwd` via project requirement pickers (no install; run `arc project apply`
@@ -27,12 +25,9 @@ pub fn create_arc_toml_interactive(
     let registry = SkillRegistry::new(paths.clone(), cache.clone());
     let _ = registry.bootstrap_catalog();
     let all_skills = registry.list_all();
-    let all_mcps = load_merged_mcp_catalog(paths)?;
-    let all_subagents = load_merged_subagent_catalog(paths)?;
 
-    let Some(selection) =
-        arc_tui::run_project_requirements_editor(&all_skills, &all_mcps, &all_subagents)
-            .map_err(|e| ArcError::new(format!("interactive selection failed: {e}")))?
+    let Some(selection) = arc_tui::run_project_requirements_editor(&all_skills)
+        .map_err(|e| ArcError::new(format!("interactive selection failed: {e}")))?
     else {
         println!("  {}", style("Canceled.").dim());
         println!();
@@ -46,12 +41,6 @@ pub fn create_arc_toml_interactive(
         version: 1,
         skills: SkillsSection {
             require: selection.skills,
-        },
-        mcps: McpsSection {
-            require: selection.mcps,
-        },
-        subagents: SubagentsSection {
-            require: selection.subagents,
         },
         markets,
         ..Default::default()
@@ -81,23 +70,15 @@ pub fn edit_arc_toml_interactive(
     let mut cfg = load_project_config(&config_path)?;
     let preselected = arc_tui::ProjectRequirementsSelection {
         skills: cfg.skills.require.clone(),
-        mcps: cfg.mcps.require.clone(),
-        subagents: cfg.subagents.require.clone(),
     };
 
     let registry = SkillRegistry::new(paths.clone(), cache.clone());
     let _ = registry.bootstrap_catalog();
     let all_skills = registry.list_all();
-    let all_mcps = load_merged_mcp_catalog(paths)?;
-    let all_subagents = load_merged_subagent_catalog(paths)?;
 
-    let Some(selection) = arc_tui::run_project_requirements_editor_with_defaults(
-        &all_skills,
-        &all_mcps,
-        &all_subagents,
-        &preselected,
-    )
-    .map_err(|e| ArcError::new(format!("interactive selection failed: {e}")))?
+    let Some(selection) =
+        arc_tui::run_project_requirements_editor_with_defaults(&all_skills, &preselected)
+            .map_err(|e| ArcError::new(format!("interactive selection failed: {e}")))?
     else {
         println!("  {}", style("Canceled.").dim());
         println!();
@@ -105,8 +86,6 @@ pub fn edit_arc_toml_interactive(
     };
 
     cfg.skills.require = selection.skills.clone();
-    cfg.mcps.require = selection.mcps;
-    cfg.subagents.require = selection.subagents;
 
     // Keep unrelated existing markets, but resync the markets implied by skill selection.
     let previous_markets = collect_markets_for_skills(paths, &all_skills, &preselected.skills);

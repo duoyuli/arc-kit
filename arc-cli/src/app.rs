@@ -1,10 +1,8 @@
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use crate::cli::{
-    Cli, Commands, McpCommand, ProjectCommand, SkillCommand, SkillListArgs, SubagentCommand,
-};
-use crate::commands::{apply, edit, market, mcp, provider, skill, status, subagent};
+use crate::cli::{Cli, Commands, ProjectCommand, SkillCommand, SkillListArgs};
+use crate::commands::{apply, edit, market, provider, skill, status};
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
 use arc_core::paths::ArcPaths;
@@ -73,16 +71,6 @@ pub fn run() -> Result<(), ArcError> {
             let cache = DetectCache::new(&paths);
             let cmd = command.unwrap_or(SkillCommand::List(SkillListArgs { installed: false }));
             skill::run(&paths, &cache, cmd, &fmt)
-        }
-        Some(Commands::Mcp { command }) => {
-            let cache = DetectCache::new(&paths);
-            let cmd = command.unwrap_or(McpCommand::List);
-            mcp::run(&paths, &cache, cmd, &fmt)
-        }
-        Some(Commands::Subagent { command }) => {
-            let cache = DetectCache::new(&paths);
-            let cmd = command.unwrap_or(SubagentCommand::List);
-            subagent::run(&paths, &cache, cmd, &fmt)
         }
         Some(Commands::Provider { command }) => {
             let cache = DetectCache::new(&paths);

@@ -1,11 +1,5 @@
 use std::path::Path;
 
-use crate::capability::{
-    CapabilityTargetState, CapabilityTargetStatus, McpApplyPlan, SourceScope, SubagentApplyPlan,
-    TrackedCapabilityInstall, apply_mcp_plan, apply_subagent_plan,
-    list_tracked_capability_installs, remove_tracked_capability, tracking_record_for_target,
-    validate_mcp_definition, validate_subagent_targets,
-};
 use crate::detect::DetectCache;
 use crate::engine::InstallEngine;
 use crate::error::{ArcError, Result};
@@ -17,8 +11,8 @@ use crate::provider::{apply_provider, load_providers_for_agent, supported_provid
 use crate::skill::SkillRegistry;
 
 use super::{
-    EffectiveConfig, ProjectCapabilityRequirements, ProjectConfig, find_project_config,
-    load_project_config, resolve_effective_config, resolve_project_capability_requirements,
+    EffectiveConfig, ProjectConfig, find_project_config, load_project_config,
+    resolve_effective_config,
 };
 
 #[derive(Debug, Clone)]
@@ -27,7 +21,6 @@ pub struct ProjectApplyPlan {
     pub effective: EffectiveConfig,
     pub provider_to_switch: Option<String>,
     pub market_events: Vec<ProjectMarketEvent>,
-    pub capability_requirements: ProjectCapabilityRequirements,
 }
 
 #[derive(Debug, Clone)]
@@ -63,18 +56,9 @@ pub struct ProjectSkillApplyItem {
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectCapabilityApplyItem {
-    pub kind: ResourceKind,
-    pub name: String,
-    pub status: CapabilityTargetStatus,
-}
-
-#[derive(Debug, Clone)]
 pub struct ProjectApplyExecution {
     pub provider_switch: Option<ProjectProviderSwitch>,
     pub skill_results: Vec<ProjectSkillApplyItem>,
-    pub capability_results: Vec<ProjectCapabilityApplyItem>,
-    pub removed_capabilities: Vec<TrackedCapabilityInstall>,
 }
 
 pub fn prepare_project_apply(
@@ -101,12 +85,6 @@ pub fn prepare_project_apply(
 
     let effective = resolve_effective_config(paths, cwd, cache, &registry)
         .map_err(|err| err.with_exit_code(1))?;
-    let capability_requirements = project_config
-        .as_ref()
-        .map(|cfg| resolve_project_capability_requirements(paths, cfg))
-        .transpose()
-        .map_err(|err| err.with_exit_code(1))?
-        .unwrap_or_default();
     let provider_to_switch = effective
         .provider_to_switch(paths)
         .map_err(|err| err.with_exit_code(1))?
@@ -117,7 +95,6 @@ pub fn prepare_project_apply(
         effective,
         provider_to_switch,
         market_events,
-        capability_requirements,
     })
 }
 
@@ -148,20 +125,9 @@ pub fn execute_project_apply(
         )?
     };
 
-    let (capability_results, removed_capabilities) = if plan.project_config.is_some() {
-        let project_root = plan.effective.project_root.as_ref().ok_or_else(|| {
-            ArcError::new("internal error: arc.toml present but project root missing")
-        })?;
-        apply_project_capabilities(paths, cache, &plan.capability_requirements, project_root)?
-    } else {
-        (Vec::new(), Vec::new())
-    };
-
     Ok(ProjectApplyExecution {
         provider_switch,
         skill_results,
-        capability_results,
-        removed_capabilities,
     })
 }
 
@@ -278,167 +244,14 @@ fn apply_project_skills(
     Ok(results)
 }
 
-fn apply_project_capabilities(
-    paths: &ArcPaths,
-    cache: &DetectCache,
-    requirements: &ProjectCapabilityRequirements,
-    project_root: &Path,
-) -> Result<(
-    Vec<ProjectCapabilityApplyItem>,
-    Vec<TrackedCapabilityInstall>,
-)> {
-    let mut items = Vec::new();
-
-    for definition in &requirements.mcps {
-        let mut definition = definition.clone();
-        validate_mcp_definition(&mut definition)?;
-        let statuses = apply_mcp_plan(
-            paths,
-            cache,
-            &McpApplyPlan {
-                definition: definition.clone(),
-                source_scope: SourceScope::Project,
-            },
-            Some(project_root),
-        )?;
-        items.extend(
-            statuses
-                .into_iter()
-                .map(|status| ProjectCapabilityApplyItem {
-                    kind: ResourceKind::Mcp,
-                    name: definition.name.clone(),
-                    status,
-                }),
-        );
-    }
-
-    for entry in &requirements.subagents {
-        let definition = entry.definition.clone();
-        let prompt_body = entry.prompt_body.clone();
-        let _ = validate_subagent_targets(cache, &definition)?;
-        let statuses = apply_subagent_plan(
-            paths,
-            cache,
-            &SubagentApplyPlan {
-                definition: definition.clone(),
-                prompt_path: None,
-                prompt_body: Some(prompt_body),
-                source_scope: SourceScope::Project,
-            },
-            Some(project_root),
-        )?;
-        items.extend(
-            statuses
-                .into_iter()
-                .map(|status| ProjectCapabilityApplyItem {
-                    kind: ResourceKind::SubAgent,
-                    name: definition.name.clone(),
-                    status,
-                }),
-        );
-    }
-
-    let removed_capabilities =
-        cleanup_removed_project_capabilities(paths, cache, requirements, project_root)?;
-
-    Ok((items, removed_capabilities))
-}
-
-fn cleanup_removed_project_capabilities(
-    paths: &ArcPaths,
-    cache: &DetectCache,
-    requirements: &ProjectCapabilityRequirements,
-    project_root: &Path,
-) -> Result<Vec<TrackedCapabilityInstall>> {
-    let desired_records =
-        desired_project_capability_records(paths, cache, requirements, project_root)?;
-    let tracked = list_tracked_capability_installs(paths);
-    let mut removed_items = Vec::new();
-    for record in tracked.into_iter().filter(|record| {
-        record.source_scope == SourceScope::Project
-            && record.project_root.as_deref() == Some(project_root)
-            && matches!(record.kind, ResourceKind::Mcp | ResourceKind::SubAgent)
-            && !desired_records.iter().any(|desired| desired == record)
-    }) {
-        remove_tracked_capability(paths, &record, Some(project_root))?;
-        removed_items.push(record);
-    }
-    Ok(removed_items)
-}
-
-fn desired_project_capability_records(
-    paths: &ArcPaths,
-    cache: &DetectCache,
-    requirements: &ProjectCapabilityRequirements,
-    project_root: &Path,
-) -> Result<Vec<TrackedCapabilityInstall>> {
-    let mut desired = Vec::new();
-
-    for definition in &requirements.mcps {
-        let mut definition = definition.clone();
-        validate_mcp_definition(&mut definition)?;
-        let statuses = crate::capability::preview_mcp_plan(
-            paths,
-            cache,
-            &McpApplyPlan {
-                definition: definition.clone(),
-                source_scope: SourceScope::Project,
-            },
-            Some(project_root),
-        )?;
-        desired.extend(statuses.into_iter().filter_map(|status| {
-            tracking_record_for_target(
-                ResourceKind::Mcp,
-                &definition.name,
-                SourceScope::Project,
-                &status,
-                Some(project_root),
-            )
-        }));
-    }
-
-    for entry in &requirements.subagents {
-        let definition = entry.definition.clone();
-        let _ = validate_subagent_targets(cache, &definition)?;
-        let statuses = crate::capability::preview_subagent_plan(
-            paths,
-            cache,
-            &SubagentApplyPlan {
-                definition: definition.clone(),
-                prompt_path: None,
-                prompt_body: Some(entry.prompt_body.clone()),
-                source_scope: SourceScope::Project,
-            },
-            Some(project_root),
-        )?;
-        desired.extend(statuses.into_iter().filter_map(|status| {
-            tracking_record_for_target(
-                ResourceKind::SubAgent,
-                &definition.name,
-                SourceScope::Project,
-                &status,
-                Some(project_root),
-            )
-        }));
-    }
-
-    Ok(desired)
-}
-
 impl ProjectApplyExecution {
     pub fn has_issues(&self, effective: &EffectiveConfig) -> bool {
         !effective.missing_unavailable.is_empty()
-            || !effective.missing_mcps_unavailable.is_empty()
-            || !effective.missing_subagents_unavailable.is_empty()
             || self.skill_results.iter().any(|item| {
                 matches!(
                     item.status,
                     ProjectSkillApplyStatus::NotFound | ProjectSkillApplyStatus::Failed { .. }
                 )
             })
-            || self
-                .capability_results
-                .iter()
-                .any(|item| item.status.status != CapabilityTargetState::Applied)
     }
 }

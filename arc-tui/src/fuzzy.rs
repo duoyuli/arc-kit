@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn count_summary_uses_custom_item_label() {
-        assert_eq!(count_summary(4, 4, "MCPs"), "4 MCPs");
-        assert_eq!(count_summary(4, 2, "MCPs"), "2 of 4 MCPs");
+        assert_eq!(count_summary(4, 4, "items"), "4 items");
+        assert_eq!(count_summary(4, 2, "items"), "2 of 4 items");
     }
 }

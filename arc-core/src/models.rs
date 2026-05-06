@@ -6,19 +6,14 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     Skill,
-    Mcp,
     ProviderProfile,
-    #[serde(rename = "subagent")]
-    SubAgent,
 }
 
 impl ResourceKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Skill => "skill",
-            Self::Mcp => "mcp",
             Self::ProviderProfile => "provider_profile",
-            Self::SubAgent => "subagent",
         }
     }
 
@@ -43,9 +38,7 @@ impl std::str::FromStr for ResourceKind {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "skill" => Ok(Self::Skill),
-            "mcp" => Ok(Self::Mcp),
             "provider_profile" => Ok(Self::ProviderProfile),
-            "subagent" => Ok(Self::SubAgent),
             _ => Err(format!("unsupported resource kind: {s}")),
         }
     }
