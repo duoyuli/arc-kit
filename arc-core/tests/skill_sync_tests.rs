@@ -32,8 +32,14 @@ fn cleanup_removes_tracked_global_install_when_skill_not_in_registry() {
     )]);
     let cache = DetectCache::from_map(agents);
     let registry = SkillRegistry::new(paths.clone(), cache);
-    track_global_skill_install(&claude_root.join("skills"), "claude", "gone-skill", &orphan)
-        .unwrap();
+    track_global_skill_install(&paths, "claude", "gone-skill", &orphan).unwrap();
+    assert!(paths.skill_tracking_file().is_file());
+    assert!(
+        !claude_root
+            .join("skills")
+            .join(".arc-skill-install.gone-skill.json")
+            .exists()
+    );
     let report = registry.cleanup_removed_global_skills().unwrap();
     assert_eq!(report.removed, 1);
     assert!(!orphan.exists());
@@ -104,13 +110,7 @@ fn sync_only_counts_actual_copy_changes() {
             &["openclaw".to_string()],
         )
         .unwrap();
-    track_global_skill_install(
-        &openclaw_root.join("skills"),
-        "openclaw",
-        "copy-skill",
-        &src,
-    )
-    .unwrap();
+    track_global_skill_install(&paths, "openclaw", "copy-skill", &src).unwrap();
 
     let target = openclaw_root.join("skills").join("copy-skill");
     assert!(!target.is_symlink());

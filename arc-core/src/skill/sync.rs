@@ -73,7 +73,7 @@ impl SkillRegistry {
         let known: HashSet<String> = self.list_all().into_iter().map(|e| e.name).collect();
         let mut removed = 0usize;
 
-        for install in list_tracked_global_skill_installs(self.detect_cache()) {
+        for install in list_tracked_global_skill_installs(self.arc_paths(), self.detect_cache())? {
             if known.contains(&install.skill) {
                 continue;
             }
@@ -85,7 +85,7 @@ impl SkillRegistry {
                     install.skill, install.agent
                 );
             }
-            untrack_global_skill_install(&install.skills_dir, &install.skill)?;
+            untrack_global_skill_install(self.arc_paths(), &install.agent, &install.skill)?;
         }
 
         Ok(GlobalSkillCleanupReport { removed })
@@ -105,7 +105,8 @@ impl SkillRegistry {
             .into_iter()
             .map(|entry| (entry.name.clone(), entry))
             .collect();
-        let mut installs = list_tracked_global_skill_installs(self.detect_cache());
+        let mut installs =
+            list_tracked_global_skill_installs(self.arc_paths(), self.detect_cache())?;
         installs.sort_by(|a, b| (&a.skill, &a.agent).cmp(&(&b.skill, &b.agent)));
         let mut report = InstalledSkillSyncReport::default();
 
@@ -189,7 +190,7 @@ impl SkillRegistry {
                 || install.source_fingerprint != desired_fingerprint
             {
                 track_global_skill_install(
-                    &install.skills_dir,
+                    self.arc_paths(),
                     &install.agent,
                     &install.skill,
                     &source_path,

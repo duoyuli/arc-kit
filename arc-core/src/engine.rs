@@ -16,6 +16,18 @@ pub struct InstallEngine {
     cache: DetectCache,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UninstallResult {
+    pub attempted_agents: Vec<String>,
+    pub removed_agents: Vec<String>,
+}
+
+impl UninstallResult {
+    pub fn removed_any(&self) -> bool {
+        !self.removed_agents.is_empty()
+    }
+}
+
 impl InstallEngine {
     pub fn new(cache: DetectCache) -> Self {
         Self { cache }
@@ -168,13 +180,13 @@ impl InstallEngine {
         name: &str,
         kind: &ResourceKind,
         targets: Option<&[String]>,
-    ) -> Result<bool> {
+    ) -> Result<UninstallResult> {
         let adapters = all_resource_adapters();
         let agents = self.cache.detected_agents();
         let selected_targets: Vec<String> = targets
             .map(|items| items.to_vec())
             .unwrap_or_else(|| agents.keys().cloned().collect());
-        let mut removed = false;
+        let mut result = UninstallResult::default();
         for target in selected_targets {
             let Some(agent_info) = agents.get(&target) else {
                 continue;
@@ -191,16 +203,17 @@ impl InstallEngine {
             };
             for adapter in &adapters {
                 if adapter.supports(&snapshot, &ctx) {
-                    let result = adapter.uninstall(&snapshot, &ctx);
-                    if result.ok && !result.applied.is_empty() {
+                    result.attempted_agents.push(target.clone());
+                    let adapter_result = adapter.uninstall(&snapshot, &ctx);
+                    if adapter_result.ok && !adapter_result.applied.is_empty() {
                         info!("uninstalled {} from {}", name, target);
-                        removed = true;
+                        result.removed_agents.push(target.clone());
                     }
                     break;
                 }
             }
         }
-        Ok(removed)
+        Ok(result)
     }
 
     pub fn is_installed_for(&self, name: &str, kind: &ResourceKind, target: &str) -> bool {

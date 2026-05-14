@@ -82,22 +82,35 @@ impl ArcPaths {
         self.arc_home.join("skills")
     }
 
-    pub fn tracking_dir(&self) -> PathBuf {
-        self.arc_home.join("tracking")
+    pub fn backups_dir(&self) -> PathBuf {
+        self.arc_home.join("backups")
+    }
+
+    pub fn skill_tracking_file(&self) -> PathBuf {
+        self.state_dir().join("skills").join("installs.json")
     }
 
     pub fn state_dir(&self) -> PathBuf {
-        self.arc_home.join("backups").join("state")
+        self.arc_home.join("state")
+    }
+
+    pub fn completions_dir(&self) -> PathBuf {
+        self.arc_home.join("completions")
     }
 
     pub fn builtin_cache_dir(&self) -> PathBuf {
         self.arc_home.join("cache").join("built-in")
     }
 
+    pub fn log_file(&self) -> PathBuf {
+        self.arc_home.join("arc.log")
+    }
+
     pub fn ensure_arc_home(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.markets_repo_root())?;
+        std::fs::create_dir_all(self.providers_dir())?;
         std::fs::create_dir_all(self.local_skills_dir())?;
-        std::fs::create_dir_all(self.tracking_dir())?;
+        std::fs::create_dir_all(self.builtin_cache_dir())?;
         std::fs::create_dir_all(self.state_dir())?;
         Ok(())
     }

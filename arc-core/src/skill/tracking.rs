@@ -7,18 +7,14 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{SkillInstallStrategy, agent_spec};
 use crate::detect::DetectCache;
 use crate::error::{ArcError, Result};
-use crate::io::atomic_write_bytes;
-
-const TRACKING_PREFIX: &str = ".arc-skill-install.";
-const TRACKING_SUFFIX: &str = ".json";
+use crate::io::{atomic_write_bytes, now_unix_secs};
+use crate::paths::ArcPaths;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedGlobalSkillInstall {
     pub skill: String,
     pub agent: String,
-    pub skills_dir: PathBuf,
     pub target_path: PathBuf,
-    pub metadata_path: PathBuf,
     pub source_path: PathBuf,
     pub source_fingerprint: String,
 }
@@ -33,13 +29,12 @@ struct TrackedGlobalSkillInstallRecord {
 }
 
 pub fn track_global_skill_install(
-    skills_dir: &Path,
+    paths: &ArcPaths,
     agent: &str,
     skill: &str,
     source_path: &Path,
 ) -> Result<()> {
-    fs::create_dir_all(skills_dir)
-        .map_err(|e| ArcError::new(format!("failed to create skills dir: {e}")))?;
+    let mut records = load_tracking_records(paths)?;
     let record = TrackedGlobalSkillInstallRecord {
         skill: skill.to_string(),
         agent: agent.to_string(),
@@ -50,69 +45,63 @@ pub fn track_global_skill_install(
             String::new()
         },
     };
-    let body = serde_json::to_vec_pretty(&record)
-        .map_err(|e| ArcError::new(format!("failed to serialize install metadata: {e}")))?;
-    atomic_write_bytes(&metadata_path(skills_dir, skill), &body)
-        .map_err(|e| ArcError::new(format!("failed to write install metadata: {e}")))?;
-    Ok(())
+    records.retain(|item| !(item.agent == agent && item.skill == skill));
+    records.push(record);
+    records.sort_by(|a, b| (&a.agent, &a.skill).cmp(&(&b.agent, &b.skill)));
+    write_tracking_records(paths, &records)
 }
 
-pub fn untrack_global_skill_install(skills_dir: &Path, skill: &str) -> Result<()> {
-    let path = metadata_path(skills_dir, skill);
-    if !path.exists() {
+pub fn untrack_global_skill_install(paths: &ArcPaths, agent: &str, skill: &str) -> Result<()> {
+    let mut records = load_tracking_records(paths)?;
+    let before = records.len();
+    records.retain(|item| !(item.agent == agent && item.skill == skill));
+    if records.len() == before {
         return Ok(());
     }
-    fs::remove_file(&path)
-        .map_err(|e| ArcError::new(format!("failed to remove install metadata: {e}")))?;
-    Ok(())
+    write_tracking_records(paths, &records)
 }
 
-pub fn list_tracked_global_skill_installs(cache: &DetectCache) -> Vec<TrackedGlobalSkillInstall> {
+pub fn untrack_global_skill_installs(paths: &ArcPaths, skill: &str) -> Result<()> {
+    let mut records = load_tracking_records(paths)?;
+    let before = records.len();
+    records.retain(|item| item.skill != skill);
+    if records.len() == before {
+        return Ok(());
+    }
+    write_tracking_records(paths, &records)
+}
+
+pub fn list_tracked_global_skill_installs(
+    paths: &ArcPaths,
+    cache: &DetectCache,
+) -> Result<Vec<TrackedGlobalSkillInstall>> {
+    let records = load_tracking_records(paths)?;
     let mut tracked = Vec::new();
 
-    for (agent_id, info) in cache.detected_agents() {
+    for record in records {
+        let Some(info) = cache.get_agent(&record.agent) else {
+            continue;
+        };
         let Some(root) = &info.root else {
             continue;
         };
-        let Some(spec) = agent_spec(agent_id) else {
+        let Some(spec) = agent_spec(&record.agent) else {
             continue;
         };
         if !spec.supports_skills {
             continue;
         }
         let skills_dir = root.join(spec.skills_subdir);
-        let Ok(entries) = fs::read_dir(&skills_dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let file_name = entry.file_name().to_string_lossy().into_owned();
-            if !is_tracking_file_name(&file_name) {
-                continue;
-            }
-            match load_tracking_record(&path) {
-                Ok(record) => tracked.push(TrackedGlobalSkillInstall {
-                    target_path: skills_dir.join(&record.skill),
-                    metadata_path: path,
-                    skills_dir: skills_dir.clone(),
-                    source_path: PathBuf::from(record.source_path),
-                    source_fingerprint: record.source_fingerprint,
-                    skill: record.skill,
-                    agent: record.agent,
-                }),
-                Err(err) => warn!(
-                    "ignoring invalid skill install metadata {}: {}",
-                    path.display(),
-                    err
-                ),
-            }
-        }
+        tracked.push(TrackedGlobalSkillInstall {
+            target_path: skills_dir.join(&record.skill),
+            source_path: PathBuf::from(record.source_path),
+            source_fingerprint: record.source_fingerprint,
+            skill: record.skill,
+            agent: record.agent,
+        });
     }
 
-    tracked
+    Ok(tracked)
 }
 
 pub fn global_skill_target_needs_sync(
@@ -155,35 +144,110 @@ pub fn fingerprint_path(path: &Path) -> Result<String> {
     Ok(format!("{:016x}", hasher.finish()))
 }
 
-pub fn is_arc_tracking_file_name(name: &str) -> bool {
-    is_tracking_file_name(name)
+pub fn tracking_file_path(paths: &ArcPaths) -> PathBuf {
+    paths.skill_tracking_file()
 }
 
-pub fn tracking_file_path(skills_dir: &Path, skill: &str) -> PathBuf {
-    metadata_path(skills_dir, skill)
+fn load_tracking_records(paths: &ArcPaths) -> Result<Vec<TrackedGlobalSkillInstallRecord>> {
+    let path = tracking_file_path(paths);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let body = match fs::read(&path) {
+        Ok(body) => body,
+        Err(err) => return recover_from_tracking_read_failure(&path, err),
+    };
+    match serde_json::from_slice(&body) {
+        Ok(records) => Ok(records),
+        Err(err) => recover_from_tracking_parse_failure(&path, err),
+    }
 }
 
-fn load_tracking_record(path: &Path) -> Result<TrackedGlobalSkillInstallRecord> {
-    let body = fs::read(path).map_err(|e| {
-        ArcError::new(format!(
-            "failed to read install metadata {}: {e}",
+fn write_tracking_records(
+    paths: &ArcPaths,
+    records: &[TrackedGlobalSkillInstallRecord],
+) -> Result<()> {
+    let path = tracking_file_path(paths);
+    if records.is_empty() {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| {
+                ArcError::new(format!(
+                    "failed to remove install metadata {}: {e}",
+                    path.display()
+                ))
+            })?;
+        }
+        return Ok(());
+    }
+    let mut body = serde_json::to_vec_pretty(records)
+        .map_err(|e| ArcError::new(format!("failed to serialize install metadata: {e}")))?;
+    body.push(b'\n');
+    atomic_write_bytes(&path, &body)
+        .map_err(|e| ArcError::new(format!("failed to write install metadata: {e}")))
+}
+
+fn recover_from_tracking_read_failure(
+    path: &Path,
+    err: std::io::Error,
+) -> Result<Vec<TrackedGlobalSkillInstallRecord>> {
+    recover_corrupt_tracking_file(path, format!("read failed: {err}"))
+}
+
+fn recover_from_tracking_parse_failure(
+    path: &Path,
+    err: serde_json::Error,
+) -> Result<Vec<TrackedGlobalSkillInstallRecord>> {
+    recover_corrupt_tracking_file(path, format!("parse failed: {err}"))
+}
+
+fn recover_corrupt_tracking_file(
+    path: &Path,
+    reason: String,
+) -> Result<Vec<TrackedGlobalSkillInstallRecord>> {
+    let quarantined = quarantine_tracking_file(path)?;
+    let warning = format!(
+        "warning: install metadata {} was unreadable and moved to {}; continuing with empty tracking state ({reason})",
+        path.display(),
+        quarantined.display()
+    );
+    eprintln!("{warning}");
+    warn!("{warning}");
+    Ok(Vec::new())
+}
+
+fn quarantine_tracking_file(path: &Path) -> Result<PathBuf> {
+    let Some(parent) = path.parent() else {
+        return Err(ArcError::new(format!(
+            "failed to isolate corrupt install metadata {}: missing parent directory",
             path.display()
+        )));
+    };
+    let timestamp = now_unix_secs();
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("installs");
+    let extension = path.extension().and_then(|value| value.to_str());
+    let mut quarantined = match extension {
+        Some(ext) => parent.join(format!("{stem}.corrupt.{timestamp}.{ext}")),
+        None => parent.join(format!("{stem}.corrupt.{timestamp}")),
+    };
+    let mut counter = 0usize;
+    while quarantined.exists() {
+        counter += 1;
+        quarantined = match extension {
+            Some(ext) => parent.join(format!("{stem}.corrupt.{timestamp}.{counter}.{ext}")),
+            None => parent.join(format!("{stem}.corrupt.{timestamp}.{counter}")),
+        };
+    }
+    fs::rename(path, &quarantined).map_err(|err| {
+        ArcError::new(format!(
+            "failed to isolate corrupt install metadata {} to {}: {err}",
+            path.display(),
+            quarantined.display()
         ))
     })?;
-    serde_json::from_slice(&body).map_err(|e| {
-        ArcError::new(format!(
-            "failed to parse install metadata {}: {e}",
-            path.display()
-        ))
-    })
-}
-
-fn metadata_path(skills_dir: &Path, skill: &str) -> PathBuf {
-    skills_dir.join(format!("{TRACKING_PREFIX}{skill}{TRACKING_SUFFIX}"))
-}
-
-fn is_tracking_file_name(name: &str) -> bool {
-    name.starts_with(TRACKING_PREFIX) && name.ends_with(TRACKING_SUFFIX)
+    Ok(quarantined)
 }
 
 fn absolutize_link_target(link_path: &Path, target: &Path) -> PathBuf {

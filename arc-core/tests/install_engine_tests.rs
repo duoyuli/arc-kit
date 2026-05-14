@@ -145,7 +145,9 @@ fn uninstall_removes_installed_skill() {
             Some(&["claude".to_string()]),
         )
         .unwrap();
-    assert!(removed);
+    assert_eq!(removed.attempted_agents, vec!["claude".to_string()]);
+    assert_eq!(removed.removed_agents, vec!["claude".to_string()]);
+    assert!(removed.removed_any());
     assert!(!link.exists());
 }
 
@@ -163,7 +165,47 @@ fn uninstall_returns_false_when_skill_not_on_disk() {
             Some(&["claude".to_string()]),
         )
         .unwrap();
-    assert!(!removed, "should return false when skill was not on disk");
+    assert_eq!(removed.attempted_agents, vec!["claude".to_string()]);
+    assert!(removed.removed_agents.is_empty());
+    assert!(
+        !removed.removed_any(),
+        "should return false when skill was not on disk"
+    );
+}
+
+#[test]
+fn uninstall_all_reports_only_detected_attempts_and_actual_removals() {
+    let temp = tempfile::tempdir().unwrap();
+    let claude_root = temp.path().join(".claude");
+    let codex_root = temp.path().join(".codex");
+    fs::create_dir_all(&claude_root).unwrap();
+    fs::create_dir_all(&codex_root).unwrap();
+
+    let source = temp.path().join("source").join("shared-skill");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "# shared\n").unwrap();
+
+    let engine =
+        install_engine_with_agents(temp.path(), &[("claude", ".claude"), ("codex", ".codex")]);
+    engine
+        .install_named(
+            "shared-skill",
+            &ResourceKind::Skill,
+            &source,
+            &["claude".to_string()],
+        )
+        .unwrap();
+
+    let removed = engine
+        .uninstall("shared-skill", &ResourceKind::Skill, None)
+        .unwrap();
+
+    assert_eq!(
+        removed.attempted_agents,
+        vec!["claude".to_string(), "codex".to_string()]
+    );
+    assert_eq!(removed.removed_agents, vec!["claude".to_string()]);
+    assert!(removed.removed_any());
 }
 
 #[test]

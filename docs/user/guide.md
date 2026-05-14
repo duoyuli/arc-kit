@@ -174,7 +174,7 @@ arc market update
 arc market remove <git-url-or-id>
 ```
 
-`arc market update` 会拉取所有 market，重建 catalog，并刷新 arc 已追踪的全局 skill 安装。
+`arc market update` 会拉取所有 market，重建 catalog，并刷新 arc 已追踪的全局 skill 安装。追踪元数据统一写入 `~/.arc-cli/state/skills/installs.json`；如果该文件损坏，arc 会自动将其隔离为 `installs.corrupt.<unix_ts>.json` 后按空状态继续。
 
 ## 8. 项目配置与 arc.toml
 

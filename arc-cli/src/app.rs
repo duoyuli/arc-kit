@@ -49,7 +49,7 @@ pub fn run() -> Result<(), ArcError> {
         .map_err(|e| ArcError::new(format!("failed to initialize state directory: {e}")))?;
     init_logger(&paths, cli.verbose);
 
-    if std::io::stderr().is_terminal() && !paths.home().join("completions").exists() {
+    if std::io::stderr().is_terminal() && !paths.completions_dir().exists() {
         eprintln!(
             "{} Run {} to enable tab completion.",
             style("Tip:").cyan().bold(),
@@ -102,7 +102,7 @@ fn generate_completion(shell: Shell) -> Result<(), ArcError> {
     };
 
     let paths = ArcPaths::default();
-    let dir = paths.home().join("completions");
+    let dir = paths.completions_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| ArcError::new(format!("failed to create completions directory: {e}")))?;
 
@@ -148,7 +148,7 @@ fn init_logger(paths: &ArcPaths, verbose: bool) {
     use std::fs::OpenOptions;
     use std::io::Write;
 
-    let log_path = paths.home().join("arc.log");
+    let log_path = paths.log_file();
     let file = OpenOptions::new().create(true).append(true).open(&log_path);
 
     let Ok(file) = file else {

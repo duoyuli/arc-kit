@@ -11,7 +11,7 @@ fn backup_dir_is_year_month_day_then_hhmmss_operation() {
     fs::write(&f, b"x").unwrap();
 
     let backup_dir = backup_files(&paths, "provider-use", &[f]).unwrap();
-    let backups_root = paths.home().join("backups");
+    let backups_root = paths.backups_dir();
     let rel = backup_dir.strip_prefix(&backups_root).unwrap();
     let parts: Vec<_> = rel
         .components()
@@ -37,7 +37,7 @@ fn backup_dir_is_year_month_day_then_hhmmss_operation() {
 fn cleanup_removes_sessions_older_than_retention_window() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ArcPaths::with_user_home(temp.path());
-    let backups = paths.home().join("backups");
+    let backups = paths.backups_dir();
     let old_session = backups
         .join("2020")
         .join("01")

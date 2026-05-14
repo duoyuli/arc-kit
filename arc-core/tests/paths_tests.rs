@@ -91,6 +91,19 @@ fn builtin_cache_dir_under_arc_home() {
 }
 
 #[test]
+fn skill_tracking_file_under_arc_home() {
+    let home = std::path::PathBuf::from("/tmp/test-home");
+    let paths = ArcPaths::with_user_home(&home);
+    assert_eq!(
+        paths.skill_tracking_file(),
+        home.join(ARC_CLI_HOME)
+            .join("state")
+            .join("skills")
+            .join("installs.json")
+    );
+}
+
+#[test]
 fn ensure_arc_home_creates_state_directory() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ArcPaths::with_user_home(temp.path());
@@ -98,4 +111,10 @@ fn ensure_arc_home_creates_state_directory() {
     paths.ensure_arc_home().unwrap();
     assert!(paths.home().exists());
     assert!(paths.markets_dir().exists());
+    assert!(paths.providers_dir().exists());
+    assert!(paths.local_skills_dir().exists());
+    assert!(paths.builtin_cache_dir().exists());
+    assert!(paths.state_dir().exists());
+    assert!(!paths.home().join("tracking").exists());
+    assert!(!paths.skill_tracking_file().exists());
 }

@@ -141,7 +141,7 @@ fn install(
             let Some(skill) = skills.iter().find(|s| &s.name == name) else {
                 continue;
             };
-            install_one(paths, cache, &registry, &engine, skill, &selected_agents)?;
+            install_one(paths, &registry, &engine, skill, &selected_agents)?;
         }
         return Ok(());
     }
@@ -160,14 +160,13 @@ fn install(
     };
 
     if *fmt == OutputFormat::Json {
-        return install_one_json(paths, cache, &registry, &engine, &skill, &targets);
+        return install_one_json(paths, &registry, &engine, &skill, &targets);
     }
-    install_one(paths, cache, &registry, &engine, &skill, &targets)
+    install_one(paths, &registry, &engine, &skill, &targets)
 }
 
 fn install_one(
     paths: &ArcPaths,
-    cache: &DetectCache,
     registry: &SkillRegistry,
     engine: &InstallEngine,
     skill: &SkillEntry,
@@ -208,7 +207,7 @@ fn install_one(
         &new_targets,
     )?;
     for agent in &installed {
-        record_global_skill_install(cache, agent, &skill.name, &source_path)?;
+        record_global_skill_install(paths, agent, &skill.name, &source_path)?;
         let agent_name = agent_display_name(agent);
         println!(
             "  {} {} → {}",
@@ -222,7 +221,6 @@ fn install_one(
 
 fn install_one_json(
     paths: &ArcPaths,
-    cache: &DetectCache,
     registry: &SkillRegistry,
     engine: &InstallEngine,
     skill: &SkillEntry,
@@ -261,7 +259,7 @@ fn install_one_json(
         ) {
             Ok(installed) => {
                 for agent in &installed {
-                    record_global_skill_install(cache, agent, &skill.name, &source_path)?;
+                    record_global_skill_install(paths, agent, &skill.name, &source_path)?;
                     items.push(WriteResultItem {
                         resource_kind: None,
                         name: skill.name.clone(),
@@ -331,9 +329,9 @@ fn uninstall(
         else {
             return Ok(());
         };
-        let removed = engine.uninstall(&name, &ResourceKind::Skill, Some(&targets))?;
-        clear_global_skill_tracking(cache, &name, Some(&targets))?;
-        if removed {
+        let result = engine.uninstall(&name, &ResourceKind::Skill, Some(&targets))?;
+        clear_global_skill_tracking(paths, &name, &result.attempted_agents)?;
+        if result.removed_any() {
             println!("  {} {} removed.", style("✓").green(), name);
         } else {
             println!("  {} {} not installed.", style("─").dim(), name);
@@ -348,14 +346,14 @@ fn uninstall(
     } else {
         Some(args.agent)
     };
-    let removed = engine.uninstall(&name, &ResourceKind::Skill, targets.as_deref())?;
-    clear_global_skill_tracking(cache, &name, targets.as_deref())?;
+    let result = engine.uninstall(&name, &ResourceKind::Skill, targets.as_deref())?;
+    clear_global_skill_tracking(paths, &name, &result.attempted_agents)?;
 
     if *fmt == OutputFormat::Json {
         print_json(&WriteResult {
             schema_version: SCHEMA_VERSION,
             ok: true,
-            message: if removed {
+            message: if result.removed_any() {
                 format!("Skill '{name}' removed.")
             } else {
                 format!("Skill '{name}' not installed.")
@@ -365,7 +363,7 @@ fn uninstall(
         return Ok(());
     }
 
-    if removed {
+    if result.removed_any() {
         println!("  {} {} removed.", style("✓").green(), name);
     } else {
         println!("  {} {} not installed.", style("─").dim(), name);
@@ -374,48 +372,24 @@ fn uninstall(
 }
 
 fn record_global_skill_install(
-    cache: &DetectCache,
+    paths: &ArcPaths,
     agent: &str,
     skill: &str,
     source_path: &std::path::Path,
 ) -> Result<(), ArcError> {
-    let Some(agent_info) = cache.get_agent(agent) else {
-        return Ok(());
-    };
-    let Some(root) = &agent_info.root else {
-        return Ok(());
-    };
-    let Some(spec) = arc_core::agent::agent_spec(agent) else {
-        return Ok(());
-    };
-    let skills_dir = root.join(spec.skills_subdir);
-    track_global_skill_install(&skills_dir, agent, skill, source_path)
+    track_global_skill_install(paths, agent, skill, source_path)
         .map_err(|err| ArcError::new(err.message))
 }
 
 fn clear_global_skill_tracking(
-    cache: &DetectCache,
+    paths: &ArcPaths,
     skill: &str,
-    targets: Option<&[String]>,
+    targets: &[String],
 ) -> Result<(), ArcError> {
-    let target_ids: Vec<String> = targets
-        .map(|items| items.to_vec())
-        .unwrap_or_else(|| cache.detected_agents().keys().cloned().collect());
-
-    for agent in target_ids {
-        let Some(agent_info) = cache.get_agent(&agent) else {
-            continue;
-        };
-        let Some(root) = &agent_info.root else {
-            continue;
-        };
-        let Some(spec) = arc_core::agent::agent_spec(&agent) else {
-            continue;
-        };
-        untrack_global_skill_install(&root.join(spec.skills_subdir), skill)
+    for agent in targets {
+        untrack_global_skill_install(paths, agent, skill)
             .map_err(|err| ArcError::new(err.message))?;
     }
-
     Ok(())
 }
 
@@ -547,5 +521,47 @@ fn print_bootstrap_report(report: &MarketSyncReport) {
             report.source_count,
             report.resource_count
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use arc_core::paths::ArcPaths;
+    use serde_json::Value;
+
+    use super::clear_global_skill_tracking;
+    use crate::commands::skill::record_global_skill_install;
+
+    #[test]
+    fn clear_global_skill_tracking_only_removes_selected_agents() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = ArcPaths::with_user_home(temp.path());
+        let source = temp.path().join("source").join("shared-skill");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "# shared\n").unwrap();
+
+        record_global_skill_install(&paths, "claude", "shared-skill", &source).unwrap();
+        record_global_skill_install(&paths, "undetected-agent", "shared-skill", &source).unwrap();
+
+        clear_global_skill_tracking(&paths, "shared-skill", &["claude".to_string()]).unwrap();
+
+        let body = fs::read_to_string(paths.skill_tracking_file()).unwrap();
+        let records: Value = serde_json::from_str(&body).unwrap();
+        let agents = records
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| {
+                record
+                    .get("agent")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(agents, vec!["undetected-agent".to_string()]);
     }
 }

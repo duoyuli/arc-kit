@@ -79,7 +79,7 @@
 
 **Q: `arc market update` 会做什么？**
 
-拉取所有 market 源的最新内容，重建索引。然后仅维护 **arc 已追踪** 的全局 skill 安装，不会删除手工放进 agent 目录的 skill。
+拉取所有 market 源的最新内容，重建索引。然后仅维护 **arc 已追踪** 的全局 skill 安装，不会删除手工放进 agent 目录的 skill。追踪元数据统一写入 `~/.arc-cli/state/skills/installs.json`；如果该文件损坏，arc 会自动将其隔离为 `installs.corrupt.<unix_ts>.json` 后按空状态继续。
 
 ## 安装与使用
 

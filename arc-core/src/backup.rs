@@ -31,8 +31,7 @@ pub fn backup_files(paths: &ArcPaths, operation: &str, files: &[PathBuf]) -> Opt
     let op = sanitize_operation_segment(operation);
 
     let backup_dir = paths
-        .home()
-        .join("backups")
+        .backups_dir()
         .join(year)
         .join(month)
         .join(day)
@@ -173,7 +172,7 @@ fn prune_empty_parents(mut path: PathBuf, stop_at: &Path) {
 }
 
 fn cleanup_old_backups(paths: &ArcPaths) {
-    let backups_dir = paths.home().join("backups");
+    let backups_dir = paths.backups_dir();
     let today = Local::now().date_naive();
     let cutoff = today - Duration::days(BACKUP_RETENTION_DAYS);
 

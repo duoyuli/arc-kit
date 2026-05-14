@@ -13,7 +13,6 @@ use crate::paths::ArcPaths;
 use crate::skill::builtin;
 use crate::skill::local;
 use crate::skill::merge;
-use crate::skill::tracking::is_arc_tracking_file_name;
 
 pub struct SkillRegistry {
     paths: ArcPaths,
@@ -120,7 +119,7 @@ impl SkillRegistry {
                 .flatten()
                 .filter_map(|entry| {
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    if name.starts_with('.') || is_arc_tracking_file_name(&name) {
+                    if name.starts_with('.') {
                         return None;
                     }
                     let path = entry.path();

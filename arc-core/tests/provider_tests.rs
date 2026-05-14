@@ -12,7 +12,6 @@ use arc_core::provider::{
 
 fn codex_snapshot_path(root: &Path, provider_name: &str) -> PathBuf {
     root.join(".arc-cli")
-        .join("backups")
         .join("state")
         .join("providers")
         .join("codex")
