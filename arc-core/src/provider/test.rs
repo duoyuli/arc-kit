@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use log::info;
@@ -40,7 +41,13 @@ pub fn test_provider(provider: &ProviderInfo) -> ProviderTestResult {
                 };
             };
             let auth_token = config.env_vars.get("ANTHROPIC_AUTH_TOKEN");
-            test_http_endpoint(base, base_url, auth_token.map(|s| s.as_str()), "x-api-key")
+            test_http_endpoint(
+                base,
+                base_url,
+                auth_token.map(|s| s.as_str()),
+                "x-api-key",
+                &BTreeMap::new(),
+            )
         }
         ProviderSettings::Codex(config) => {
             let Some(base_url) = &config.base_url else {
@@ -55,7 +62,13 @@ pub fn test_provider(provider: &ProviderInfo) -> ProviderTestResult {
                     ..base
                 };
             };
-            test_http_endpoint(base, base_url, config.api_key.as_deref(), "Authorization")
+            test_http_endpoint(
+                base,
+                base_url,
+                config.api_key.as_deref(),
+                "Authorization",
+                &config.http_headers,
+            )
         }
     }
 }
@@ -65,6 +78,7 @@ fn test_http_endpoint(
     base_url: &str,
     auth: Option<&str>,
     auth_header: &str,
+    custom_headers: &BTreeMap<String, String>,
 ) -> ProviderTestResult {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     info!("provider test: {} — GET {}", base.provider_name, url);
@@ -79,6 +93,10 @@ fn test_http_endpoint(
             token.to_string()
         };
         request = request.set(auth_header, &value);
+    }
+
+    for (key, value) in custom_headers {
+        request = request.set(key, value);
     }
 
     match request.call() {

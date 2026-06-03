@@ -39,6 +39,7 @@ pub struct ClaudeProviderConfig {
 pub struct CodexProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+    pub http_headers: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy)]

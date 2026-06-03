@@ -126,6 +126,7 @@ fn provider_switch_writes_codex_proxy_auth_with_only_api_key() {
         settings: ProviderSettings::Codex(CodexProviderConfig {
             base_url: Some("https://example.com".to_string()),
             api_key: Some("sk-test".to_string()),
+            ..Default::default()
         }),
     };
 
@@ -177,6 +178,7 @@ fn provider_switch_writes_codex_base_url() {
         settings: ProviderSettings::Codex(CodexProviderConfig {
             api_key: Some("sk-test".to_string()),
             base_url: Some("https://example.com/codex".to_string()),
+            ..Default::default()
         }),
     };
 
@@ -362,6 +364,7 @@ fn provider_switch_rolls_back_codex_auth_when_config_write_fails() {
         settings: ProviderSettings::Codex(CodexProviderConfig {
             api_key: Some("sk-new".to_string()),
             base_url: Some("https://example.com".to_string()),
+            ..Default::default()
         }),
     };
 
@@ -539,4 +542,82 @@ fn seed_default_providers_only_seeds_supported_agents() {
         !paths.providers_dir().join("openclaw.toml").exists(),
         "openclaw has no provider backend, should never be seeded"
     );
+}
+
+#[test]
+fn load_providers_parses_codex_http_headers() {
+    let temp = tempfile::tempdir().unwrap();
+    let providers_dir = temp.path().join(".arc-cli").join("providers");
+    fs::create_dir_all(&providers_dir).unwrap();
+    fs::write(
+        providers_dir.join("codex.toml"),
+        "[proxy]\ndisplay_name = \"Proxy\"\napi_key = \"sk-test\"\nbase_url = \"https://example.com\"\n\n[proxy.http_headers]\nX-Custom = \"val1\"\nAnother = \"val2\"\n",
+    )
+    .unwrap();
+
+    let providers = load_providers_for_agent(&providers_dir, "codex");
+    assert_eq!(providers.len(), 1);
+    let ProviderSettings::Codex(config) = &providers[0].settings else {
+        panic!("expected codex settings");
+    };
+    assert_eq!(config.http_headers.len(), 2);
+    assert_eq!(
+        config.http_headers.get("X-Custom").map(|s| s.as_str()),
+        Some("val1")
+    );
+    assert_eq!(
+        config.http_headers.get("Another").map(|s| s.as_str()),
+        Some("val2")
+    );
+}
+
+#[test]
+fn provider_switch_writes_codex_http_headers() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ArcPaths::with_user_home(temp.path());
+    let codex_dir = temp.path().join(".codex");
+    fs::create_dir_all(&codex_dir).unwrap();
+
+    let provider = ProviderInfo {
+        name: "proxy".to_string(),
+        display_name: "My Proxy".to_string(),
+        description: String::new(),
+        agent: "codex".to_string(),
+        settings: ProviderSettings::Codex(CodexProviderConfig {
+            api_key: Some("sk-test".to_string()),
+            base_url: Some("https://example.com".to_string()),
+            http_headers: BTreeMap::from([
+                ("X-Custom".to_string(), "val1".to_string()),
+                ("Another".to_string(), "val2".to_string()),
+            ]),
+        }),
+    };
+
+    apply_provider(&paths, &provider).unwrap();
+    let content = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+    assert!(content.contains("[model_providers.proxy.http_headers]"));
+    assert!(content.contains("X-Custom = \"val1\""));
+    assert!(content.contains("Another = \"val2\""));
+}
+
+#[test]
+fn provider_switch_omits_empty_codex_http_headers() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ArcPaths::with_user_home(temp.path());
+
+    let provider = ProviderInfo {
+        name: "proxy".to_string(),
+        display_name: "My Proxy".to_string(),
+        description: String::new(),
+        agent: "codex".to_string(),
+        settings: ProviderSettings::Codex(CodexProviderConfig {
+            api_key: Some("sk-test".to_string()),
+            base_url: Some("https://example.com".to_string()),
+            ..Default::default()
+        }),
+    };
+
+    apply_provider(&paths, &provider).unwrap();
+    let content = fs::read_to_string(temp.path().join(".codex").join("config.toml")).unwrap();
+    assert!(!content.contains("http_headers"));
 }

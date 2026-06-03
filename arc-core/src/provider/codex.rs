@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -37,7 +38,21 @@ pub fn parse_provider_config(section: &toml::Table) -> ProviderSettings {
             .and_then(toml::Value::as_str)
             .filter(|v| !v.is_empty())
             .map(str::to_string),
+        http_headers: parse_http_headers(section),
     })
+}
+
+fn parse_http_headers(section: &toml::Table) -> BTreeMap<String, String> {
+    let Some(table) = section.get("http_headers").and_then(toml::Value::as_table) else {
+        return BTreeMap::new();
+    };
+    table
+        .iter()
+        .filter_map(|(k, v)| {
+            let value = v.as_str()?;
+            Some((k.clone(), value.to_string()))
+        })
+        .collect()
 }
 
 pub fn apply_provider(
@@ -322,6 +337,17 @@ fn write_main_config(
             "base_url".to_string(),
             toml::Value::String(base_url.clone()),
         );
+
+        if !config.http_headers.is_empty() {
+            let headers_table = toml::Value::Table(
+                config
+                    .http_headers
+                    .iter()
+                    .map(|(k, v)| (k.clone(), toml::Value::String(v.clone())))
+                    .collect(),
+            );
+            provider_table.insert("http_headers".to_string(), headers_table);
+        }
 
         let model_providers = config_table
             .entry("model_providers".to_string())
