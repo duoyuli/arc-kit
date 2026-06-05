@@ -1,112 +1,116 @@
 # arc-kit
 
-> 编码 Agent 的 provider、skill 与 market 配置管理工具
+> 面向 coding agent 的 provider、skill、market 与项目配置管理工具。
 
 [English](README.md)
 
-## 简介
+## 解决什么问题
 
-在同时使用 Claude Code、Codex 等多个 Agent 时，常见问题包括：
+团队同时使用多个 coding agent 时，同一类配置工作往往要在每个工具里重复执行：
 
-- 切换模型供应商时，每个工具都要单独修改配置文件
-- 写了一个好用的 Skill，想让所有助手都能用，得手动复制到不同目录
-- Skill 升级后又得手动复制一遍
-- 接入 GitHub 上的 Skill 仓库时，需要手动 clone、定位目录并复制
-- 团队协作时，每个人的配置都不一样
+- provider profile 需要分别编辑每个 agent 的原生配置；
+- 好用的 skill 需要手工复制到多个 agent 目录；
+- skill 更新后还要重新复制；
+- 共享 skill 仓库需要手工 clone、扫描和安装；
+- 项目接入依赖本机未记录的状态。
 
-**arc-kit 用同一套 CLI 管理 provider、skill、market 和项目级 skill 落地。**
+`arc-kit` 用一个本地 CLI 收敛这些流程。
 
 ## 核心能力
 
-**1. Provider 统一管理**
+### Provider 管理
 
-执行 `arc provider use <name> [--agent <agent>]` 可切换 provider profile。交互式模式按 coding agent 分 tab 展示，一次只看一个 agent 的 provider，支持方向键与 `h/j/k/l` 导航、`q` 退出。若需在项目内固定 provider，可在 `arc.toml` 中声明 `[provider]` 后执行 `arc project apply`。
+为支持的 agent 切换 provider profile：
 
-**2. Skill 一处管理，多处使用**
+```bash
+arc provider list
+arc provider use <name> --agent codex
+arc provider test
+```
 
-本地 skill 目录为 `~/.arc-cli/skills/`。加入 catalog 后，可通过 `arc skill install <name>` 安装到目标 agent。
+项目级 provider 要求可以写在 `arc.toml` 中，并通过 `arc project apply` 落地。
 
-三层来源，高优先级覆盖低优先级：
+### Skill 管理
 
-| 来源 | 路径 | 说明 |
-|---|---|---|
-| local | `~/.arc-cli/skills/<name>/` | 用户自定义 |
-| market | 远程 git 仓库 | 社区或团队共享 |
-| built-in | 嵌入 arc-kit 二进制 | 自带 Skill，首次使用自动释放 |
+在 `~/.arc-cli/skills/` 中统一管理 skill，然后安装到支持的 agent：
 
-**3. Market 发现与同步**
+```bash
+arc skill list
+arc skill info <name>
+arc skill install <name> --agent claude --agent codex
+```
 
-- 可接入官方或社区维护的 skill 仓库
-- 可接入团队私有仓库：`arc market add <Git 仓库地址>`
-- 拉取更新并刷新 catalog：`arc market update`
+Skill 来源按优先级解析：
 
-**4. 项目级配置**
+| 来源 | 路径 | 用途 |
+| --- | --- | --- |
+| local | `~/.arc-cli/skills/<name>/` | 用户自定义 skill |
+| market | 远程 git 仓库 | 团队或社区共享 skill |
+| built-in | 嵌入二进制 | arc-kit 自带 skill |
 
-在仓库中放置 `arc.toml` 后，执行 `arc project apply` 可同步 market、skill 和 provider 要求。该命令支持非交互式 `--format json` 输出，适用于 CI/CD；首次执行且仓库内还没有 `arc.toml` 时，交互式路径会先进入单屏 `Project Skills` 编辑器创建配置，非交互式纯文本会报错，JSON 会返回结构化失败结果。
+### Market 同步
 
-> MCP 与 subagent 管理功能已移除；`arc.toml` 只接受 `provider`、`skills`、`markets` 和 `version`。
+Market 是包含 skill 的 git 仓库：
 
-## FAQ
+```bash
+arc market list
+arc market add <git-url>
+arc market update
+arc market remove <git-url-or-id>
+```
 
-**Q: arc-kit 支持哪些 Agent？**
+`arc market update` 会重建 catalog，并且只刷新由 arc 跟踪的全局 skill 安装。
 
-当前支持 Claude Code、Codex、Cursor CLI、OpenClaw、OpenCode、Gemini CLI、Kimi CLI。安装时自动检测已安装的 agent。
+### 项目配置
 
-**Q: 安装 Skill 后，各个 Agent 的目录结构会是什么样？**
+在仓库中放置 `arc.toml` 来声明项目要求：
 
-默认使用软链接安装（OpenClaw 除外，使用目录复制）：
+```toml
+version = 1
 
-| Agent | 全局 Skill 路径 |
-|---|---|
-| Claude Code | `~/.claude/skills/<name>` |
-| Codex | `~/.codex/skills/<name>` |
-| Cursor CLI | `~/.cursor/skills-cursor/<name>` |
-| OpenCode | `~/.config/opencode/skills/<name>` |
-| Gemini CLI | `~/.gemini/skills/<name>` |
-| Kimi CLI | `~/.kimi/skills/<name>` |
-| OpenClaw | `~/.openclaw/skills/<name>` |
+[provider]
+name = "official"
 
-项目级 skill 由 `arc.toml` 定义，`arc project apply` 安装到仓库内的 agent 路径：
+[[markets]]
+url = "https://github.com/team/skills.git"
 
-| Agent | 项目级 Skill 路径 |
-|---|---|
-| Claude Code | `./.claude/skills/<name>` |
-| Codex | `./.codex/skills/<name>` |
-| Cursor CLI | `./.cursor/skills/<name>` |
-| OpenCode | `./.opencode/skills/<name>` |
-| Gemini CLI | `./.gemini/skills/<name>` |
-| Kimi CLI | `./.kimi/skills/<name>` |
+[skills]
+require = ["team-review"]
+```
 
-> OpenClaw 不参与项目级安装。
+然后执行：
 
-**Q: `arc market update` 会做什么？**
+```bash
+arc project apply
+arc status
+```
 
-拉取所有 market 源的最新内容，重建索引。然后仅维护 **arc 已追踪** 的全局 skill 安装，不会删除手工放进 agent 目录的 skill。追踪元数据统一写入 `~/.arc-cli/state/skills/installs.json`；如果该文件损坏，arc 会自动将其隔离为 `installs.corrupt.<unix_ts>.json` 后按空状态继续。
+`arc.toml` 只支持 `version`、`provider`、`markets` 和 `skills`。MCP 与 subagent 管理功能已移除。
 
-## 安装与使用
-
-### Homebrew（推荐）
+## 安装
 
 ```bash
 brew tap duoyuli/arc-kit https://github.com/duoyuli/arc-kit.git
 brew install arc-kit
 ```
 
+目标平台：macOS。
+
 ## 命令总览
 
 ```text
 arc                     # 显示帮助
-arc status              # 显示 Project / Agents / Catalog / Actions 状态
+arc status              # 显示项目、agent、catalog 和 action 状态
 arc version             # 显示版本
 arc completion <shell>  # 生成 shell 补全
-arc provider list       # 列出可用模型供应商
-arc provider use        # 切换模型供应商
-arc provider test       # 测试模型供应商连通性
+arc provider list       # 列出 provider
+arc provider use        # 切换 provider
+arc provider test       # 测试 provider 连通性
 arc market list         # 列出 market 源
 arc market add <url>    # 添加 market 源
-arc market remove <git-url-or-id>  # 移除 market 源
+arc market remove <git-url-or-id>
 arc market update       # 更新所有 market 源
-arc skill list          # 列出 skills
+arc skill list          # 列出 skill
 arc skill install       # 安装 skill
 arc skill uninstall     # 卸载 skill
 arc skill info          # 显示 skill 详情
@@ -114,12 +118,20 @@ arc project apply       # 应用 arc.toml 配置
 arc project edit        # 交互式编辑 arc.toml skills
 ```
 
-`arc project edit` / 首次执行的 `arc project apply` 使用同一套单屏 skill 编辑器：可直接搜索 skill，`space` 勾选，`enter` 保存，`esc` 取消且不写文件。
+支持时，可用 `--format json` 进行自动化：
+
+```bash
+arc status --format json
+arc project apply --format json --agent codex
+```
 
 ## 文档
 
-| 文档 | 内容 |
-|---|---|
-| [docs/user/guide.md](docs/user/guide.md) | 产品使用说明书 |
-| [docs/developer/design.md](docs/developer/design.md) | 交互/非交互设计规范 |
-| [docs/developer/development.md](docs/developer/development.md) | 开发贡献指南 |
+| 文档 | 用途 |
+| --- | --- |
+| [docs/user/guide.zh-CN.md](docs/user/guide.zh-CN.md) | 完整用户手册 |
+| [docs/developer/design.zh-CN.md](docs/developer/design.zh-CN.md) | 交互/非交互与 JSON 设计规则 |
+| [docs/developer/development.zh-CN.md](docs/developer/development.zh-CN.md) | 开发流程、门禁和仓库结构 |
+| [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md) | 贡献入口 |
+
+英文默认文件使用相同路径，不带 `.zh-CN` 后缀。

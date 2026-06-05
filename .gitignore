@@ -25,6 +25,7 @@ Thumbs.db
 .agents/
 .omx/
 .codex/
+.omo/
 
 # build output
 target/

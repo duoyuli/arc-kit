@@ -1,22 +1,13 @@
-# 开发与贡献 / Development & Contribution
+# Development Guide
 
-命令与交互设计见 [用户手册](../user/guide.md) 与 [交互与自动化设计](design.md)。仓库里的 agent 支持、项目级路径和内置资源命名，都以当前代码实现为准。
+[中文](development.zh-CN.md)
 
-Command and interaction design: [user manual](../user/guide.md) and [interactive/non-interactive design](design.md). Agent support, project-level paths, and built-in resource naming in this repo are authoritative per the current code.
+This document covers contributor workflow, repository structure, and verification gates. Command semantics are defined in [design.md](design.md); user workflows are in [../user/guide.md](../user/guide.md).
 
-## 贡献方式 / How to Contribute
+## Environment
 
-- 缺陷：提交 Issue，写清复现步骤、预期/实际行为、系统与已安装的 coding agent。
-  Bugs: file an Issue with repro steps, expected/actual behavior, OS, and installed coding agents.
-- 较大功能或重构：先讨论范围再动手。
-  Major features/refactors: discuss scope first.
-- 行为变更：须补测试，覆盖改动到的核心路径。
-  Behavioral changes: must include tests covering affected core paths.
-
-## 开发环境 / Development Environment
-
-- Rust：稳定版 toolchain / Stable toolchain
-- 平台：当前以 macOS 为主 / Platform: macOS primary
+- Rust stable toolchain
+- macOS target platform
 
 ```bash
 git clone https://github.com/duoyuli/arc-kit.git
@@ -25,9 +16,9 @@ cargo check
 cargo test
 ```
 
-## 提交前检查 / Pre-commit Checks
+## Required Checks
 
-仓库根目录执行 / Run at repo root:
+Before submitting code:
 
 ```bash
 cargo fmt --all
@@ -36,7 +27,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-若改动 CLI 入口、输出格式或交互语义，须补充黑盒检查 / If CLI entry, output format, or interaction semantics changed, also run:
+If CLI entry points, output formats, or interaction semantics changed, also run:
 
 ```bash
 cargo run -p arc-cli -- --help
@@ -44,81 +35,65 @@ cargo run -p arc-cli -- status
 cargo run -p arc-cli -- status --format json
 ```
 
-## 发版前完整回归 / Pre-release Full Regression
-
-版本号变更、打 `v*` tag 或正式发布前，必须通过 / Before version bumps, `v*` tags, or formal releases, must pass:
+Before version bumps, `v*` tags, or formal releases:
 
 ```bash
 ./scripts/regression.sh
 ```
 
-脚本内容是 `cargo fmt --all --check`、`cargo check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`，以及在隔离的 `ARC_KIT_USER_HOME` 下执行 CLI 黑盒。覆盖内容包括：
+The regression script runs formatting, build, clippy, tests, and black-box CLI checks in an isolated `ARC_KIT_USER_HOME`.
 
-The script runs `cargo fmt --all --check`, `cargo check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and CLI black-box tests in an isolated `ARC_KIT_USER_HOME`. Coverage includes:
-
-- `status --format json` 的模块存在性（`project`、`agents`、`catalog`、`actions`）
-  Module presence in `status --format json` (`project`, `agents`, `catalog`, `actions`)
-- `skill install`、`skill uninstall`、`provider use` 在 `--format json` 下的非交互缺参失败
-  Non-interactive missing-param failures for `skill install`, `skill uninstall`, `provider use` with `--format json`
-- `skill info` 的结构化 JSON 错误
-  Structured JSON errors from `skill info`
-- `mcp` / `subagent` 命令已移除
-  `mcp` / `subagent` commands removed
-- `[mcps]` 等移除后的 `arc.toml` section 会被拒绝
-  Removed sections like `[mcps]` are rejected in `arc.toml`
-
-## 仓库结构 / Repository Structure
+## Repository Structure
 
 ```text
 .
-├── arc-cli/          # CLI、clap、用户输出、format JSON
-│                     # CLI, clap, user output, format JSON
-├── arc-core/         # 领域逻辑、安装引擎、provider、market、skill、detect
-│                     # Domain logic, install engine, provider, market, skill, detect
-├── arc-tui/          # 交互 UI（仅本 crate 依赖 dialoguer）
-│                     # Interactive UI (only this crate depends on dialoguer)
-├── built-in/         # 内置 skill 与 market 索引
-│                     # Built-in skills and market index
-├── docs/             # 官方文档 / Official documentation
+├── arc-cli/          # CLI, clap command table, user output, JSON structs
+├── arc-core/         # domain logic, install engine, provider, market, skill, detect, paths, io
+├── arc-tui/          # interactive UI; only this crate depends on dialoguer
+├── built-in/         # built-in skills and market index
+├── docs/             # official documentation
 ├── scripts/
-│   └── regression.sh # 发版前回归 / Pre-release regression
+│   └── regression.sh # pre-release regression
 └── Cargo.toml
 ```
 
-## 模块职责 / Module Responsibilities
+## Module Ownership
 
-- `arc-cli`：`app` 编排、`cli` 命令表、`commands/*`、`format.rs` JSON 结构体。
-  `arc-cli`: `app` orchestration, `cli` command table, `commands/*`, `format.rs` JSON structs.
-- `arc-core`：`CodingAgentSpec` 与 `detect`、`engine` + `adapters`、`skill` 三源注册表、`status`、`market`、`provider`、`paths`、`io`。
-  `arc-core`: `CodingAgentSpec` and `detect`, `engine` + `adapters`, `skill` three-source registry, `status`, `market`, `provider`, `paths`, `io`.
-- `arc-tui`：模糊搜索、skill browser、provider tab 选择器、skill 安装/卸载向导、项目 skill 编辑器、主题。
-  `arc-tui`: fuzzy search, skill browser, provider tab selector, skill install/uninstall wizard, project skill editor, theme.
+- `arc-core`: business logic, state, filesystem operations, provider application, market sync, skill registry, install engine, detection, and project resolution.
+- `arc-cli`: command definitions, command dispatch, user output, and JSON response shapes.
+- `arc-tui`: interactive terminal UI, selectors, fuzzy browsing, wizard flows, and themes.
 
-补充约束 / Additional constraints:
+Do not put business logic in `arc-cli`. Do not put `dialoguer` interaction in `arc-core` or `arc-cli`.
 
-- 终端排版、列表布局和交互模式判定 helper 留在 `arc-cli` / `arc-tui`。
-  Terminal layout, list rendering, and interactive-mode detection helpers stay in `arc-cli` / `arc-tui`.
-- 文件写入优先复用 `arc-core::io` 的原子写接口。
-  File writes should reuse `arc-core::io` atomic write interfaces.
-- 不要引入未使用依赖。
-  No unused dependencies.
+## Documentation Requirements
 
-## 路线图备忘 / Roadmap Notes
+Behavioral code changes must update the relevant documentation:
 
-- P0：`provider` / `market` / `skill` 行为稳定；改动必带测试。
-  P0: `provider` / `market` / `skill` behavior stable; changes must include tests.
-- P1：market / provider 黑盒与边界测试加强。
-  P1: Strengthen market / provider black-box and edge-case tests.
-- P2：配置与 provider schema 文档化（持续）。
-  P2: Configuration and provider schema documentation (ongoing).
+- `README.md` for product-facing capability changes;
+- `docs/user/guide.md` for user workflows;
+- `docs/developer/design.md` for CLI semantics, JSON, or interaction changes;
+- `docs/developer/development.md` for build, test, release, or module-ownership changes;
+- matching `.zh-CN.md` mirrors.
 
-## 合并请求规范 / Merge Request Conventions
+Code comments and CLI prompts are English. Official documentation is maintained as English-default files plus Chinese mirror files.
 
-- 单次 PR 范围尽量单一。
-  Keep each PR focused.
-- 说明改了什么、为什么、影响哪些命令或磁盘布局。
-  Describe what changed, why, and which commands or disk layouts are affected.
-- 兼容性变化须写清迁移或破坏面。
-  Breaking changes must document migration or impact.
-- 不引入未使用依赖；保持现有 Rust 风格。
-  No unused dependencies; follow existing Rust style.
+## Contribution Rules
+
+- Keep each change focused.
+- Include tests for behavior changes.
+- Avoid unrelated refactors.
+- Do not introduce unused dependencies.
+- Use `arc-core::io` atomic write helpers for persistent writes.
+- Keep terminal layout and interactive-mode checks near the CLI/TUI boundary.
+
+## Release Rules
+
+- Confirm the `main` push succeeds before pushing a release tag.
+- Push tags separately.
+- Do not run `git push origin main --tags`.
+
+## Roadmap Notes
+
+- P0: provider, market, and skill behavior must remain stable; changes need tests.
+- P1: strengthen market/provider black-box and edge-case tests.
+- P2: continue documenting configuration and provider schema behavior.
