@@ -2,7 +2,7 @@
 
 [中文](CONTRIBUTING.zh-CN.md)
 
-Thank you for contributing. This file is the short contribution entry point; detailed workflow and command semantics live in the developer docs.
+Thank you for contributing. This file is the short contribution entry point; detailed workflow and command semantics live in the root README.
 
 ## Before You Start
 
@@ -43,11 +43,8 @@ cargo run -p arc-cli -- status --format json
 
 Code changes must update the relevant docs:
 
-- root `README.md` for product-facing changes;
-- `docs/user/guide.md` for user workflows;
-- `docs/developer/design.md` for command semantics, JSON, or interaction design;
-- `docs/developer/development.md` for development workflow or release gates;
-- matching `.zh-CN.md` files for Chinese mirrors.
+- `README.md` for product-facing changes, user workflows, command semantics, JSON, interaction design, development workflow, or release gates;
+- `README.zh-CN.md` for the matching Chinese mirror content.
 
 ## Pull Request Guidelines
 
@@ -59,6 +56,6 @@ Code changes must update the relevant docs:
 
 ## More Detail
 
-- [Development guide](docs/developer/development.md)
-- [Interaction and JSON design](docs/developer/design.md)
-- [User manual](docs/user/guide.md)
+- [Development guide](README.md#development-guide)
+- [Interaction and JSON design](README.md#interaction-and-automation-design)
+- [User guide](README.md#user-guide)

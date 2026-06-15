@@ -1,11 +1,11 @@
-This file defines the minimal working constraints for agents in this repository. Detailed specifications are in [docs/developer/design.md](docs/developer/design.md) and [docs/developer/development.md](docs/developer/development.md).
+This file defines the minimal working constraints for agents in this repository. Detailed specifications are in [README.md](README.md).
 
-本文件为 Agent 在此仓库中的最小工作约束。细节规范以 [docs/developer/design.md](docs/developer/design.md) 和 [docs/developer/development.md](docs/developer/development.md) 为准。
+本文件为 Agent 在此仓库中的最小工作约束。细节规范以 [README.zh-CN.md](README.zh-CN.md) 为准。
 
 ## Project / 项目
 
-- `arc-kit` is a Rust CLI for managing coding agent providers, skills, MCP, subagents, and markets.
-  `arc-kit` 是一个 Rust CLI，用于管理 coding agent 的 provider、skill、MCP、subagent 和 market。
+- `arc-kit` is a Rust CLI for managing coding agent providers, skills, markets, and project configuration.
+  `arc-kit` 是一个 Rust CLI，用于管理 coding agent 的 provider、skill、market 和项目配置。
 - Target platform is macOS only.
   目标平台仅为 macOS。
 - Cargo workspace is divided into / Cargo workspace 主要分为:
@@ -21,8 +21,8 @@ This file defines the minimal working constraints for agents in this repository.
   TUI / `dialoguer` 交互只放在 `arc-tui`。
 - All behavioral changes must include tests.
   所有行为变更必须带测试。
-- Code changes must be accompanied by updates to `README.md` and `docs/`.
-  有代码变动时，必须同步更新 `README.md` 与 `docs/`。
+- Code changes must be accompanied by updates to `README.md` and `README.zh-CN.md`.
+  有代码变动时，必须同步更新 `README.md` 与 `README.zh-CN.md`。
 - No unrelated refactors; no unused dependencies.
   不要混入无关重构；不要引入未使用依赖。
 - Code comments and CLI prompts use English; documentation uses English + Chinese, with English first by default.
@@ -41,9 +41,9 @@ This file defines the minimal working constraints for agents in this repository.
 - Resource commands like `skill` / `mcp` / `subagent` are evaluated as a full `list / info / install / uninstall` family for both human and agent support.
   `skill` / `mcp` / `subagent` 这类资源命令，按整组 `list / info / install / uninstall` 判断是否同时支持 for 人和 for Agent。
 
-Details on interaction and automation are in [docs/developer/design.md](docs/developer/design.md).
+Details on interaction and automation are in [README.md](README.md#interaction-and-automation-design).
 
-交互与自动化细则见 [docs/developer/design.md](docs/developer/design.md)。
+交互与自动化细则见 [README.zh-CN.md](README.zh-CN.md#交互与自动化设计)。
 
 ## Verification / 验证
 
@@ -69,9 +69,9 @@ cargo run -p arc-cli -- status
 ./scripts/regression.sh
 ```
 
-Full regression, black-box matrix, and development conventions are in [docs/developer/development.md](docs/developer/development.md).
+Full regression, black-box matrix, and development conventions are in [README.md](README.md#development-guide).
 
-完整回归、黑盒矩阵和开发规范见 [docs/developer/development.md](docs/developer/development.md)。
+完整回归、黑盒矩阵和开发规范见 [README.zh-CN.md](README.zh-CN.md#开发指南)。
 
 ## Release / 发版
 
