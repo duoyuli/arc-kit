@@ -86,6 +86,7 @@ Rules:
 - `arc provider` is equivalent to `arc provider list`.
 - Non-interactive `provider use` requires a provider name.
 - If the same provider name exists for multiple agents, pass `--agent`.
+- Codex proxy providers are written to Codex with native `name = "OpenAI"`; the arc provider name still selects the profile.
 - `provider test` exits with `1` if any tested provider fails.
 
 Provider config files:

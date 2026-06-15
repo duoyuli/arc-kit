@@ -15,6 +15,8 @@ use crate::paths::ArcPaths;
 
 use super::{CodexProviderConfig, ProviderInfo, ProviderSettings};
 
+const CODEX_MODEL_PROVIDER_NAME: &str = "OpenAI";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CodexProviderMode {
     AuthOnly,
@@ -331,7 +333,7 @@ fn write_main_config(
         let mut provider_table = toml::Table::new();
         provider_table.insert(
             "name".to_string(),
-            toml::Value::String(provider.display_name.clone()),
+            toml::Value::String(CODEX_MODEL_PROVIDER_NAME.to_string()),
         );
         provider_table.insert(
             "base_url".to_string(),

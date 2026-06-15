@@ -187,7 +187,7 @@ fn provider_switch_writes_codex_base_url() {
     let content = fs::read_to_string(config_path).unwrap();
     assert!(content.contains("model_provider = \"proxy\""));
     assert!(content.contains("[model_providers.proxy]"));
-    assert!(content.contains("name = \"My Proxy\""));
+    assert!(content.contains("name = \"OpenAI\""));
     assert!(content.contains("base_url = \"https://example.com/codex\""));
     assert!(!content.contains("wire_api"));
 }

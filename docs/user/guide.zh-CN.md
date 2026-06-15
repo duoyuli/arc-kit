@@ -86,6 +86,7 @@ arc provider test
 - `arc provider` 等同于 `arc provider list`。
 - 非交互式 `provider use` 必须提供 provider 名。
 - 如果同名 provider 出现在多个 agent 中，需要传 `--agent`。
+- Codex proxy provider 写入 Codex 原生配置时固定为 `name = "OpenAI"`；arc provider 名仍用于选择 profile。
 - 只要任一被测试 provider 失败，`provider test` 就以 `1` 退出。
 
 Provider 配置文件：

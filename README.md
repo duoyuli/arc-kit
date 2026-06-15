@@ -29,6 +29,7 @@ arc provider test
 ```
 
 Project-level provider requirements can be declared in `arc.toml` and applied with `arc project apply`.
+When writing Codex proxy providers, `arc-kit` keeps Codex's native provider `name` field fixed as `OpenAI`; the arc provider profile name still selects the profile.
 
 ### Skill Management
 
