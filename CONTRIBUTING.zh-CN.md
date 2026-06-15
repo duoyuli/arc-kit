@@ -2,7 +2,7 @@
 
 [English](CONTRIBUTING.md)
 
-感谢贡献。本文件是简短贡献入口；更完整的流程和命令语义见开发者文档。
+感谢贡献。本文件是简短贡献入口；更完整的流程和命令语义见根目录 README。
 
 ## 开始之前
 
@@ -43,11 +43,8 @@ cargo run -p arc-cli -- status --format json
 
 代码变更必须同步更新相关文档：
 
-- 面向产品说明的根目录 `README.md`；
-- 用户流程对应的 `docs/user/guide.md`；
-- 命令语义、JSON 或交互设计对应的 `docs/developer/design.md`；
-- 开发流程或发版门禁对应的 `docs/developer/development.md`；
-- 中文镜像对应的 `.zh-CN.md` 文件。
+- `README.md` 中对应的产品说明、用户流程、命令语义、JSON、交互设计、开发流程或发版门禁内容；
+- `README.zh-CN.md` 中对应的中文镜像内容。
 
 ## Pull Request 规范
 
@@ -59,6 +56,6 @@ cargo run -p arc-cli -- status --format json
 
 ## 更多信息
 
-- [开发指南](docs/developer/development.zh-CN.md)
-- [交互与 JSON 设计](docs/developer/design.zh-CN.md)
-- [用户手册](docs/user/guide.zh-CN.md)
+- [开发指南](README.zh-CN.md#开发指南)
+- [交互与 JSON 设计](README.zh-CN.md#交互与自动化设计)
+- [用户指南](README.zh-CN.md#用户指南)

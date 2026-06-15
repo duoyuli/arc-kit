@@ -16,10 +16,10 @@ Follow the steps below; keep answers short and accurate.
 
 ## Information Sources / 信息源
 
-- Primary source: `docs/user/guide.md`.
-  以 `docs/user/guide.md` 为主。
-- Interactive/non-interactive, JSON, exit codes: `docs/developer/design.md`.
-  交互/非交互、JSON、退出码看 `docs/developer/design.md`。
+- Primary source: `README.md`.
+  以 `README.md` 为主。
+- Interactive/non-interactive, JSON, exit codes: `README.md#interaction-and-automation-design`.
+  交互/非交互、JSON、退出码看 `README.md#interaction-and-automation-design`。
 - If docs conflict with implementation, code is authoritative, especially `arc-cli/src/cli.rs`, `arc-cli/src/commands/*`, `arc-core/src/agent/mod.rs`.
   若文档与实现冲突，以代码为准，尤其是 `arc-cli/src/cli.rs`、`arc-cli/src/commands/*`、`arc-core/src/agent/mod.rs`。
 
