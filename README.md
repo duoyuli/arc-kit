@@ -224,6 +224,7 @@ Other fields are handled by each agent:
 - Claude Code converts them to JSON under `~/.claude/settings.json`'s `env` object, preserving strings, numbers, booleans, arrays, and nested tables. Switching removes the previous profile's managed fields and preserves unrelated environment variables and settings.
 - Codex copies them unchanged into `[model_providers.OpenAI]` in `~/.codex/config.toml` when applying an API key profile. Switching replaces that table and preserves unrelated settings and other provider tables.
 - Codex fixes `model_provider = "OpenAI"` and the native `name = "OpenAI"`. Defaults are `wire_api = "responses"`, `requires_openai_auth = false`, and `http_headers = { "x-openai-actor-authorization" = "local-image-extension" }`. Explicit extra fields replace these defaults; `http_headers` follows the same generic passthrough as other extra fields. `provider test` uses the resulting static headers.
+- Codex always writes `http_headers` as an inline table inside `[model_providers.OpenAI]`, including custom or empty headers. Reapplying a profile converts an existing `[model_providers.OpenAI.http_headers]` section to the inline form; subsequent switches keep that format.
 - The native Codex name remains `OpenAI`; common credentials take precedence over their native aliases in extra fields. Display metadata is never written into native configuration.
 - Codex auth handling is unchanged: leaving an auth-only profile saves its login snapshot; returning restores it and removes the native `model_provider` selection. API key profiles still write only `OPENAI_API_KEY` to `auth.json`.
 
@@ -609,10 +610,13 @@ cargo run -p arc-cli -- status --format json
 Before version bumps, `v*` tags, or formal releases:
 
 ```bash
-./scripts/regression.sh
+cargo fmt --all --check
+cargo check
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-The regression script runs formatting, build, clippy, tests, and black-box CLI checks in an isolated `ARC_KIT_USER_HOME`.
+The black-box CLI contract checks (exit codes, stderr text, JSON failure shapes) live in `arc-cli/tests/` and run as part of `cargo test` against an isolated `ARC_KIT_USER_HOME`.
 
 ### Repository Structure
 
@@ -622,8 +626,6 @@ The regression script runs formatting, build, clippy, tests, and black-box CLI c
 ├── arc-core/         # domain logic, install engine, provider, market, skill, detect, paths, io
 ├── arc-tui/          # interactive UI; only this crate depends on dialoguer
 ├── built-in/         # built-in skills and market index
-├── scripts/
-│   └── regression.sh # pre-release regression
 └── Cargo.toml
 ```
 

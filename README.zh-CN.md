@@ -224,6 +224,7 @@ Provider 配置文件：
 - Claude Code 将其转换为 JSON，写入 `~/.claude/settings.json` 的 `env` 对象，保留字符串、数字、布尔值、数组和嵌套表的类型。切换时清理上一个 profile 管理的字段，并保留其他环境变量和设置。
 - Codex 在应用 API Key profile 时，将其原样写入 `~/.codex/config.toml` 的 `[model_providers.OpenAI]`。切换时替换该表，并保留其他设置和 provider 表。
 - Codex 固定使用 `model_provider = "OpenAI"` 和原生 `name = "OpenAI"`，默认写入 `wire_api = "responses"`、`requires_openai_auth = false`，以及 `http_headers = { "x-openai-actor-authorization" = "local-image-extension" }`。显式扩展字段会覆盖这些默认值；`http_headers` 与其他扩展字段一样走通用透传。`provider test` 使用最终配置的静态请求头。
+- Codex 始终将 `http_headers` 以内联表形式写在 `[model_providers.OpenAI]` 内，自定义或空请求头也保持这一格式。重新应用 profile 会将已有的 `[model_providers.OpenAI.http_headers]` 子表转换为内联形式，后续切换也会保持。
 - Codex 原生名称保持为 `OpenAI`；公共凭据字段优先于扩展配置中对应的原生别名。展示元数据不会写入原生配置。
 - Codex auth 处理保持不变：切离 auth-only profile 时保存其登录态快照，切回时恢复快照并移除原生 `model_provider` 选择。API Key profile 仍将 `auth.json` 重写为仅含 `OPENAI_API_KEY`。
 
@@ -609,10 +610,13 @@ cargo run -p arc-cli -- status --format json
 版本号变更、打 `v*` tag 或正式发布前：
 
 ```bash
-./scripts/regression.sh
+cargo fmt --all --check
+cargo check
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-回归脚本会在隔离的 `ARC_KIT_USER_HOME` 下执行格式检查、构建、clippy、测试和 CLI 黑盒检查。
+CLI 黑盒契约检查（退出码、stderr 文案、JSON 失败结构）位于 `arc-cli/tests/`，随 `cargo test` 在隔离的 `ARC_KIT_USER_HOME` 下执行。
 
 ### 仓库结构
 
@@ -622,8 +626,6 @@ cargo run -p arc-cli -- status --format json
 ├── arc-core/         # 领域逻辑、安装引擎、provider、market、skill、detect、paths、io
 ├── arc-tui/          # 交互 UI；只有这个 crate 依赖 dialoguer
 ├── built-in/         # 内置 skill 和 market index
-├── scripts/
-│   └── regression.sh # 发版前回归
 └── Cargo.toml
 ```
 

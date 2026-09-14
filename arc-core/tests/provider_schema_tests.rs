@@ -254,3 +254,125 @@ api_key = "sk-next"
         Some("local-image-extension")
     );
 }
+
+#[test]
+fn codex_keeps_headers_inline_across_existing_configs_and_provider_switches() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ArcPaths::with_user_home(temp.path());
+    fs::create_dir_all(paths.providers_dir()).unwrap();
+    fs::write(
+        paths.providers_dir().join("codex.toml"),
+        r#"
+[custom]
+display_name = "Custom"
+description = "Custom headers"
+base_url = "https://custom.example.com"
+api_key = "sk-custom"
+
+[custom.http_headers]
+"X.Dotted" = 'quoted "value" with \ backslash'
+X-Note = "[model_providers.OpenAI.http_headers]"
+
+[empty]
+display_name = "Empty"
+description = "Empty headers"
+base_url = "https://empty.example.com"
+api_key = "sk-empty"
+http_headers = {}
+
+[official]
+display_name = "Official"
+description = "Subscription login"
+"#,
+    )
+    .unwrap();
+    let config_path = temp.path().join(".codex/config.toml");
+    fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        r#"
+model = "gpt-5.4"
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://old.example.com"
+experimental_bearer_token = "sk-old"
+
+[model_providers.OpenAI.http_headers]
+x-openai-actor-authorization = "old-actor"
+
+[model_providers.other.http_headers]
+X-Keep = "untouched"
+
+[mcp_servers.demo]
+command = "demo-server"
+"#,
+    )
+    .unwrap();
+    let providers = load_providers_for_agent(&paths.providers_dir(), "codex").unwrap();
+    let custom = providers
+        .iter()
+        .find(|provider| provider.name == "custom")
+        .unwrap();
+    let official = providers
+        .iter()
+        .find(|provider| provider.name == "official")
+        .unwrap();
+    let empty = providers
+        .iter()
+        .find(|provider| provider.name == "empty")
+        .unwrap();
+
+    apply_provider(&paths, custom).unwrap();
+    let first_output = fs::read_to_string(&config_path).unwrap();
+    apply_provider(&paths, custom).unwrap();
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), first_output);
+
+    for provider in [custom, official, empty] {
+        apply_provider(&paths, provider).unwrap();
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(
+            content
+                .lines()
+                .any(|line| { line.starts_with("http_headers = {") && line.ends_with('}') })
+        );
+        assert!(
+            !content
+                .lines()
+                .any(|line| { line == "[model_providers.OpenAI.http_headers]" })
+        );
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        assert_eq!(config["model"].as_str(), Some("gpt-5.4"));
+        assert_eq!(
+            config["mcp_servers"]["demo"]["command"].as_str(),
+            Some("demo-server")
+        );
+        assert_eq!(
+            config["model_providers"]["other"]["http_headers"]["X-Keep"].as_str(),
+            Some("untouched")
+        );
+        let headers = config["model_providers"]["OpenAI"]["http_headers"]
+            .as_table()
+            .unwrap();
+        if provider.name == "empty" {
+            assert!(headers.is_empty());
+            assert!(content.contains("http_headers = {}"));
+        } else {
+            assert_eq!(headers.len(), 2);
+            assert_eq!(
+                headers["X.Dotted"].as_str(),
+                Some("quoted \"value\" with \\ backslash")
+            );
+            assert_eq!(
+                headers["X-Note"].as_str(),
+                Some("[model_providers.OpenAI.http_headers]")
+            );
+        }
+        if provider.name == "official" {
+            assert!(config.get("model_provider").is_none());
+        } else {
+            assert_eq!(config["model_provider"].as_str(), Some("OpenAI"));
+        }
+    }
+}

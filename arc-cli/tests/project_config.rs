@@ -183,6 +183,31 @@ fn arc_apply_exits_1_on_parse_error() {
 }
 
 #[test]
+fn arc_apply_rejects_removed_mcps_section() {
+    let temp = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+
+    fs::write(
+        proj.path().join("arc.toml"),
+        "[mcps]\nrequire = [\"github\"]\n",
+    )
+    .unwrap();
+
+    let output = arc_cmd_with_home(temp.path())
+        .args(["project", "apply"])
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown field \"mcps\""),
+        "expected removed section rejection, got: {stderr}"
+    );
+}
+
+#[test]
 fn arc_apply_exits_0_with_unavailable_skill() {
     let temp = tempfile::tempdir().unwrap();
     let proj = tempfile::tempdir().unwrap();

@@ -8,7 +8,6 @@ use serde_json::{Map, Value};
 use crate::error::{ArcError, Result};
 use crate::io::{
     atomic_write_string, read_to_string_if_exists, read_toml_table, write_json_pretty,
-    write_toml_pretty,
 };
 use crate::paths::ArcPaths;
 
@@ -355,7 +354,24 @@ fn write_main_config(paths: &ArcPaths, config: &CodexProviderConfig) -> Result<(
     }
 
     config_table.remove("openai_base_url");
-    write_toml_pretty(&config_path, &toml::Value::Table(config_table))
+    let output = toml::to_string_pretty(&config_table)
+        .map_err(|err| ArcError::new(format!("failed to serialize Codex config.toml: {err}")))?;
+    let mut document = output
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| ArcError::new("failed to format Codex config.toml"))?;
+    if let Some(provider) = document
+        .get_mut("model_providers")
+        .and_then(|providers| providers.get_mut(CODEX_MODEL_PROVIDER_NAME))
+        .and_then(toml_edit::Item::as_table_mut)
+        && let Some(toml_edit::Item::Table(headers)) = provider.get_mut("http_headers")
+    {
+        let headers = headers.clone().into_inline_table();
+        provider.insert("http_headers", toml_edit::value(headers));
+        if let Some(mut key) = provider.key_mut("http_headers") {
+            key.fmt();
+        }
+    }
+    atomic_write_string(&config_path, &format!("{document}\n"))
         .map_err(|err| ArcError::new(format!("failed to write Codex config.toml: {err}")))
 }
 

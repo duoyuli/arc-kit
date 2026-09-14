@@ -49,6 +49,28 @@ fn help_command_exposes_primary_commands() {
 }
 
 #[test]
+fn removed_resource_subcommands_are_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    for name in ["mcp", "subagent"] {
+        let output = arc_cmd_with_home(temp.path())
+            .args([name, "list"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{name} should exit 2 as an unknown subcommand"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("unrecognized subcommand '{name}'")),
+            "expected rejection of {name}, got: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn provider_test_runs_without_error() {
     let temp = tempfile::tempdir().unwrap();
     let output = arc_cmd()
@@ -296,6 +318,22 @@ fn skill_list_uses_builtin_market_index_without_local_catalog() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Bootstrapped 1 market sources and indexed 1 resources"));
     assert!(stdout.contains("demo-skill"));
+}
+
+#[test]
+fn skill_info_missing_returns_structured_json_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = arc_cmd_with_home(temp.path())
+        .args(["skill", "info", "missing", "--format", "json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}, output: {stdout}"));
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"], "skill 'missing' not found.");
 }
 
 #[test]

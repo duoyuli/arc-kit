@@ -41,9 +41,14 @@ base_url = "https://global-infra.net"
 api_key = "sk-xxx"
 "#,
     );
-    let settings: toml::Value =
-        toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
-            .unwrap();
+    let content = fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap();
+    assert!(content.lines().any(|line| {
+        line.starts_with("http_headers = {")
+            && line.contains("local-image-extension")
+            && line.ends_with('}')
+    }));
+    assert!(!content.contains("[model_providers.OpenAI.http_headers]"));
+    let settings: toml::Value = toml::from_str(&content).unwrap();
     let expected: toml::Value = toml::from_str(
         r#"
 model_provider = "OpenAI"

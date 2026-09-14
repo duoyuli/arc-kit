@@ -66,7 +66,10 @@ cargo run -p arc-cli -- status
 - Must run before release / 发版前必须执行:
 
 ```bash
-./scripts/regression.sh
+cargo fmt --all --check
+cargo check
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
 Full regression, black-box matrix, and development conventions are in [README.md](README.md#development-guide).
