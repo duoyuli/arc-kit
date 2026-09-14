@@ -169,7 +169,7 @@ fn apply_provider_switch(paths: &ArcPaths, provider_name: &str) -> Result<Projec
     let providers_dir = paths.providers_dir();
     let mut agents = Vec::new();
     for agent in supported_provider_agents() {
-        let providers = load_providers_for_agent(&providers_dir, agent);
+        let providers = load_providers_for_agent(&providers_dir, agent)?;
         if let Some(provider) = providers
             .into_iter()
             .find(|item| item.name == provider_name)

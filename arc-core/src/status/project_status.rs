@@ -168,9 +168,12 @@ fn collect_project_provider(
         .iter()
         .filter(|agent| agent.supports_provider)
         .map(|agent| {
-            let has_profile = load_providers_for_agent(&providers_dir, &agent.id)
-                .iter()
-                .any(|provider| provider.name == provider_name);
+            let has_profile =
+                load_providers_for_agent(&providers_dir, &agent.id).is_ok_and(|providers| {
+                    providers
+                        .iter()
+                        .any(|provider| provider.name == provider_name)
+                });
             let state = if !has_profile {
                 ProviderMatchState::MissingProfile
             } else if read_active_provider(&providers_dir, &agent.id).as_deref()

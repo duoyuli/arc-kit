@@ -14,8 +14,8 @@ pub(super) fn collect_agents(
             let spec = agent_spec(agent_id);
             let provider = read_active_provider(&providers_dir, agent_id).map(|active_name| {
                 let display_name = load_providers_for_agent(&providers_dir, agent_id)
-                    .into_iter()
-                    .find(|p| p.name == active_name)
+                    .ok()
+                    .and_then(|providers| providers.into_iter().find(|p| p.name == active_name))
                     .map(|p| p.display_name)
                     .unwrap_or_else(|| active_name.clone());
                 AgentProviderStatus {

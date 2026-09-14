@@ -29,6 +29,7 @@ arc provider test
 ```
 
 项目级 provider 要求可以写在 `arc.toml` 中，并通过 `arc project apply` 落地。
+Provider profile 统一使用 `display_name`、`description`、`base_url` 和 `api_key`，由各 agent 映射凭据并写入扩展配置。Auth-only profile 保持原有登录行为。
 
 ### Skill 管理
 
@@ -202,20 +203,97 @@ arc provider use official --agent codex
 arc provider test
 ```
 
-规则：
-
-- `arc provider` 等同于 `arc provider list`。
-- 非交互式 `provider use` 必须提供 provider 名。
-- 如果同名 provider 出现在多个 agent 中，需要传 `--agent`。
-- Codex proxy provider 写入 Codex 原生配置时固定为 `name = "OpenAI"`；arc provider 名仍用于选择 profile。
-- 只要任一被测试 provider 失败，`provider test` 就以 `1` 退出。
-
 Provider 配置文件：
 
 ```text
 ~/.arc-cli/providers/claude.toml
 ~/.arc-cli/providers/codex.toml
 ```
+
+每个 profile 统一使用四个公共字段。`display_name` 和 `description` 必须填写且类型为字符串。API Key profile 还必须同时提供非空字符串 `base_url` 和 `api_key`。Auth-only profile 可以省略这两个凭据字段，也可以都设为空字符串。
+
+| 公共字段 | 用途 | Claude Code 写入位置 | Codex 写入位置 |
+| --- | --- | --- | --- |
+| `display_name` | 切换时展示的名称 | 仅用于展示 | 仅用于展示 |
+| `description` | Profile 描述 | 仅用于展示 | 仅用于展示 |
+| `base_url` | 调用模型的地址 | `env.ANTHROPIC_BASE_URL` | `model_providers.OpenAI.base_url` |
+| `api_key` | API Key | `env.ANTHROPIC_AUTH_TOKEN` | `model_providers.OpenAI.experimental_bearer_token` |
+
+其他字段由各 agent 分别处理：
+
+- Claude Code 将其转换为 JSON，写入 `~/.claude/settings.json` 的 `env` 对象，保留字符串、数字、布尔值、数组和嵌套表的类型。切换时清理上一个 profile 管理的字段，并保留其他环境变量和设置。
+- Codex 在应用 API Key profile 时，将其原样写入 `~/.codex/config.toml` 的 `[model_providers.OpenAI]`。切换时替换该表，并保留其他设置和 provider 表。
+- Codex 固定使用 `model_provider = "OpenAI"` 和原生 `name = "OpenAI"`，默认写入 `wire_api = "responses"`、`requires_openai_auth = false`，以及 `http_headers = { "x-openai-actor-authorization" = "local-image-extension" }`。显式扩展字段会覆盖这些默认值；`http_headers` 与其他扩展字段一样走通用透传。`provider test` 使用最终配置的静态请求头。
+- Codex 原生名称保持为 `OpenAI`；公共凭据字段优先于扩展配置中对应的原生别名。展示元数据不会写入原生配置。
+- Codex auth 处理保持不变：切离 auth-only profile 时保存其登录态快照，切回时恢复快照并移除原生 `model_provider` 选择。API Key profile 仍将 `auth.json` 重写为仅含 `OPENAI_API_KEY`。
+
+在 `~/.arc-cli/providers/claude.toml` 中配置 Claude Code profile，例如：
+
+```toml
+[deepseek]
+display_name = "DeepSeek"
+description = "DeepSeek API 按量付费"
+base_url = "https://api.deepseek.com/anthropic"
+api_key = "sk-xxx"
+ANTHROPIC_MODEL = "deepseek-flash[1m]"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "deepseek-flash[1m]"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "deepseek-flash[1m]"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "deepseek-flash"
+CLAUDE_CODE_SUBAGENT_MODEL = "deepseek-flash"
+CLAUDE_CODE_EFFORT_LEVEL = "max"
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = 786432
+```
+
+执行 `arc provider use deepseek --agent claude` 后写入：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-xxx",
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_MODEL": "deepseek-flash[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": 786432
+  }
+}
+```
+
+在 `~/.arc-cli/providers/codex.toml` 中配置 Codex profile，例如：
+
+```toml
+[global-infra]
+display_name = "Global Infra"
+description = "订阅制"
+base_url = "https://global-infra.net"
+api_key = "sk-xxx"
+```
+
+执行 `arc provider use global-infra --agent codex` 后写入：
+
+```toml
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://global-infra.net"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "sk-xxx"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+```
+
+Codex 原生字段定义见 [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。Claude profile 请使用公共 `base_url`、`api_key` 替代原生凭据字段，并为旧 profile 补齐缺少的展示元数据。升级后重新执行 `provider use` 即可应用当前格式。
+
+命令规则：
+
+- `arc provider` 等同于 `arc provider list`。
+- 非交互式 `provider use` 必须提供 provider 名；同名 provider 出现在多个 agent 中时，需要传 `--agent`。
+- Provider 文件无效、缺少必填字段、公共字段类型错误或凭据字段不成对时，provider 命令会在切换前以 `1` 退出。
+- 任一被测试 provider 失败时，`provider test` 以 `1` 退出。
 
 ### Skills
 

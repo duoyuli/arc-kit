@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use log::info;
 
+use super::codex::CODEX_HTTP_HEADERS;
 use super::{ProviderInfo, ProviderSettings};
 
 #[derive(Debug, Clone)]
@@ -28,7 +28,11 @@ pub fn test_provider(provider: &ProviderInfo) -> ProviderTestResult {
 
     match &provider.settings {
         ProviderSettings::Claude(config) => {
-            let Some(base_url) = config.env_vars.get("ANTHROPIC_BASE_URL") else {
+            let Some(base_url) = config
+                .env_vars
+                .get("ANTHROPIC_BASE_URL")
+                .and_then(serde_json::Value::as_str)
+            else {
                 // Official provider — no custom URL to test, assume ok.
                 info!(
                     "provider test: {} — official endpoint (skipped)",
@@ -44,9 +48,9 @@ pub fn test_provider(provider: &ProviderInfo) -> ProviderTestResult {
             test_http_endpoint(
                 base,
                 base_url,
-                auth_token.map(|s| s.as_str()),
+                auth_token.and_then(serde_json::Value::as_str),
                 "x-api-key",
-                &BTreeMap::new(),
+                &[],
             )
         }
         ProviderSettings::Codex(config) => {
@@ -62,12 +66,25 @@ pub fn test_provider(provider: &ProviderInfo) -> ProviderTestResult {
                     ..base
                 };
             };
+            let extra_headers = config
+                .extra
+                .get("http_headers")
+                .and_then(toml::Value::as_table)
+                .map(|headers| {
+                    headers
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            value.as_str().map(|value| (key.as_str(), value))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| CODEX_HTTP_HEADERS.to_vec());
             test_http_endpoint(
                 base,
                 base_url,
                 config.api_key.as_deref(),
                 "Authorization",
-                &config.http_headers,
+                &extra_headers,
             )
         }
     }
@@ -78,7 +95,7 @@ fn test_http_endpoint(
     base_url: &str,
     auth: Option<&str>,
     auth_header: &str,
-    custom_headers: &BTreeMap<String, String>,
+    extra_headers: &[(&str, &str)],
 ) -> ProviderTestResult {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     info!("provider test: {} — GET {}", base.provider_name, url);
@@ -95,7 +112,7 @@ fn test_http_endpoint(
         request = request.set(auth_header, &value);
     }
 
-    for (key, value) in custom_headers {
+    for (key, value) in extra_headers {
         request = request.set(key, value);
     }
 

@@ -1,9 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use arc_core::detect::{AgentInfo, DetectCache};
 use arc_core::paths::ArcPaths;
+use arc_core::provider::test::test_provider;
 use arc_core::provider::{
     ClaudeProviderConfig, CodexProviderConfig, ProviderInfo, ProviderSettings, apply_provider,
     load_providers_for_agent, read_active_provider, seed_default_providers,
@@ -26,6 +31,7 @@ fn write_codex_snapshot(root: &Path, provider_name: &str, body: &str) {
 
 fn load_codex_provider(paths: &ArcPaths, name: &str) -> ProviderInfo {
     load_providers_for_agent(&paths.providers_dir(), "codex")
+        .unwrap()
         .into_iter()
         .find(|provider| provider.name == name)
         .unwrap_or_else(|| panic!("missing provider '{name}'"))
@@ -43,7 +49,7 @@ fn provider_switch_writes_claude_settings() {
         settings: ProviderSettings::Claude(ClaudeProviderConfig {
             env_vars: BTreeMap::from([(
                 "ANTHROPIC_BASE_URL".to_string(),
-                "https://example.com".to_string(),
+                "https://example.com".into(),
             )]),
         }),
     };
@@ -62,7 +68,7 @@ fn provider_switch_clears_old_claude_env_vars() {
     fs::create_dir_all(&providers_dir).unwrap();
     fs::write(
         providers_dir.join("claude.toml"),
-        "[old]\ndisplay_name = \"Old\"\nANTHROPIC_BASE_URL = \"https://old.example.com\"\nCUSTOM_VAR = \"old-val\"\n\n[new]\ndisplay_name = \"New\"\nANTHROPIC_BASE_URL = \"https://new.example.com\"\n",
+        "[old]\ndisplay_name = \"Old\"\ndescription = \"Old profile\"\nbase_url = \"https://old.example.com\"\napi_key = \"sk-old\"\nCUSTOM_VAR = \"old-val\"\n\n[new]\ndisplay_name = \"New\"\ndescription = \"New profile\"\nbase_url = \"https://new.example.com\"\napi_key = \"sk-new\"\n",
     )
     .unwrap();
 
@@ -75,9 +81,9 @@ fn provider_switch_clears_old_claude_env_vars() {
             env_vars: BTreeMap::from([
                 (
                     "ANTHROPIC_BASE_URL".to_string(),
-                    "https://old.example.com".to_string(),
+                    "https://old.example.com".into(),
                 ),
-                ("CUSTOM_VAR".to_string(), "old-val".to_string()),
+                ("CUSTOM_VAR".to_string(), "old-val".into()),
             ]),
         }),
     };
@@ -92,7 +98,7 @@ fn provider_switch_clears_old_claude_env_vars() {
         settings: ProviderSettings::Claude(ClaudeProviderConfig {
             env_vars: BTreeMap::from([(
                 "ANTHROPIC_BASE_URL".to_string(),
-                "https://new.example.com".to_string(),
+                "https://new.example.com".into(),
             )]),
         }),
     };
@@ -144,7 +150,7 @@ fn provider_switch_snapshots_codex_auth_for_auth_provider() {
     fs::create_dir_all(&providers_dir).unwrap();
     fs::write(
         providers_dir.join("codex.toml"),
-        "[official]\ndisplay_name = \"OpenAI\"\ndescription = \"auth login\"\n\n[proxy]\ndisplay_name = \"Proxy\"\napi_key = \"sk-proxy\"\nbase_url = \"https://example.com\"\n",
+        "[official]\ndisplay_name = \"OpenAI\"\ndescription = \"auth login\"\n\n[proxy]\ndisplay_name = \"Proxy\"\ndescription = \"API access\"\napi_key = \"sk-proxy\"\nbase_url = \"https://example.com\"\n",
     )
     .unwrap();
     write_active_provider(&providers_dir, "codex", "official").unwrap();
@@ -155,6 +161,7 @@ fn provider_switch_snapshots_codex_auth_for_auth_provider() {
     fs::write(codex_dir.join("auth.json"), original_auth).unwrap();
 
     let proxy = load_providers_for_agent(&providers_dir, "codex")
+        .unwrap()
         .into_iter()
         .find(|provider| provider.name == "proxy")
         .unwrap();
@@ -167,7 +174,7 @@ fn provider_switch_snapshots_codex_auth_for_auth_provider() {
 }
 
 #[test]
-fn provider_switch_writes_codex_base_url() {
+fn provider_switch_writes_codex_api_key_config() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ArcPaths::with_user_home(temp.path());
     let provider = ProviderInfo {
@@ -185,11 +192,100 @@ fn provider_switch_writes_codex_base_url() {
     apply_provider(&paths, &provider).unwrap();
     let config_path = temp.path().join(".codex").join("config.toml");
     let content = fs::read_to_string(config_path).unwrap();
-    assert!(content.contains("model_provider = \"proxy\""));
-    assert!(content.contains("[model_providers.proxy]"));
-    assert!(content.contains("name = \"OpenAI\""));
-    assert!(content.contains("base_url = \"https://example.com/codex\""));
-    assert!(!content.contains("wire_api"));
+    let config = toml::from_str::<toml::Value>(&content).unwrap();
+    let expected = toml::from_str::<toml::Value>(
+        r#"
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://example.com/codex"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "sk-test"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+"#,
+    )
+    .unwrap();
+    assert_eq!(config, expected);
+    assert_eq!(
+        read_active_provider(&paths.providers_dir(), "codex").as_deref(),
+        Some("proxy")
+    );
+}
+
+#[test]
+fn provider_switch_replaces_codex_api_key_config_and_preserves_unrelated_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = ArcPaths::with_user_home(temp.path());
+    let codex_dir = temp.path().join(".codex");
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(
+        codex_dir.join("config.toml"),
+        r#"
+model = "gpt-5.4"
+model_provider = "legacy"
+openai_base_url = "https://old.example.com"
+
+[model_providers.legacy]
+name = "Legacy"
+base_url = "https://legacy.example.com"
+
+[model_providers.OpenAI]
+name = "Stale"
+env_key = "OLD_API_KEY"
+requires_openai_auth = true
+http_headers = { "X-Old" = "old" }
+"#,
+    )
+    .unwrap();
+
+    let mut provider = ProviderInfo {
+        name: "proxy_a".to_string(),
+        display_name: "Proxy A".to_string(),
+        description: String::new(),
+        agent: "codex".to_string(),
+        settings: ProviderSettings::Codex(CodexProviderConfig {
+            api_key: Some("sk-a".to_string()),
+            base_url: Some("https://a.example.com".to_string()),
+            ..Default::default()
+        }),
+    };
+    apply_provider(&paths, &provider).unwrap();
+
+    provider.name = "proxy_b".to_string();
+    provider.settings = ProviderSettings::Codex(CodexProviderConfig {
+        api_key: Some("sk-b".to_string()),
+        base_url: Some("https://b.example.com".to_string()),
+        ..Default::default()
+    });
+    apply_provider(&paths, &provider).unwrap();
+
+    let content = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+    let config = toml::from_str::<toml::Value>(&content).unwrap();
+    assert_eq!(config["model"].as_str(), Some("gpt-5.4"));
+    assert_eq!(config["model_provider"].as_str(), Some("OpenAI"));
+    assert!(config.get("openai_base_url").is_none());
+    let providers = config["model_providers"].as_table().unwrap();
+    assert_eq!(providers.len(), 2);
+    assert_eq!(
+        providers["legacy"]["base_url"].as_str(),
+        Some("https://legacy.example.com")
+    );
+    let native = &providers["OpenAI"];
+    assert_eq!(native["name"].as_str(), Some("OpenAI"));
+    assert_eq!(native["base_url"].as_str(), Some("https://b.example.com"));
+    assert_eq!(native["experimental_bearer_token"].as_str(), Some("sk-b"));
+    assert_eq!(native["wire_api"].as_str(), Some("responses"));
+    assert_eq!(native["requires_openai_auth"].as_bool(), Some(false));
+    assert!(native.get("env_key").is_none());
+    assert_eq!(native["http_headers"].as_table().unwrap().len(), 1);
+    assert!(!content.contains("sk-a"));
+    assert!(!content.contains("X-Old"));
+    assert_eq!(
+        read_active_provider(&paths.providers_dir(), "codex").as_deref(),
+        Some("proxy_b")
+    );
 }
 
 #[test]
@@ -267,7 +363,7 @@ fn provider_switch_distinguishes_multiple_auth_only_profiles() {
     fs::create_dir_all(&codex_dir).unwrap();
     fs::write(
         providers_dir.join("codex.toml"),
-        "[work]\ndisplay_name = \"Work\"\ndescription = \"work auth\"\n\n[personal]\ndisplay_name = \"Personal\"\ndescription = \"personal auth\"\n\n[proxy_a]\ndisplay_name = \"Proxy A\"\napi_key = \"sk-a\"\nbase_url = \"https://a.example.com\"\n\n[proxy_b]\ndisplay_name = \"Proxy B\"\napi_key = \"sk-b\"\nbase_url = \"https://b.example.com\"\n",
+        "[work]\ndisplay_name = \"Work\"\ndescription = \"work auth\"\n\n[personal]\ndisplay_name = \"Personal\"\ndescription = \"personal auth\"\n\n[proxy_a]\ndisplay_name = \"Proxy A\"\ndescription = \"API access A\"\napi_key = \"sk-a\"\nbase_url = \"https://a.example.com\"\n\n[proxy_b]\ndisplay_name = \"Proxy B\"\ndescription = \"API access B\"\napi_key = \"sk-b\"\nbase_url = \"https://b.example.com\"\n",
     )
     .unwrap();
     write_active_provider(&providers_dir, "codex", "work").unwrap();
@@ -323,7 +419,7 @@ fn provider_switch_to_fresh_auth_only_removes_proxy_auth_file() {
     fs::create_dir_all(&codex_dir).unwrap();
     fs::write(
         providers_dir.join("codex.toml"),
-        "[auth_only]\ndisplay_name = \"Auth Only\"\ndescription = \"fresh login\"\n\n[proxy]\ndisplay_name = \"Proxy\"\napi_key = \"sk-proxy\"\nbase_url = \"https://proxy.example.com\"\n",
+        "[auth_only]\ndisplay_name = \"Auth Only\"\ndescription = \"fresh login\"\n\n[proxy]\ndisplay_name = \"Proxy\"\ndescription = \"API access\"\napi_key = \"sk-proxy\"\nbase_url = \"https://proxy.example.com\"\n",
     )
     .unwrap();
     write_active_provider(&providers_dir, "codex", "proxy").unwrap();
@@ -441,7 +537,7 @@ fn load_providers_parses_structured_codex_settings() {
     )
     .unwrap();
 
-    let providers = load_providers_for_agent(&providers_dir, "codex");
+    let providers = load_providers_for_agent(&providers_dir, "codex").unwrap();
     assert_eq!(providers.len(), 1);
     let ProviderSettings::Codex(config) = &providers[0].settings else {
         panic!("expected codex settings");
@@ -457,11 +553,11 @@ fn load_providers_parses_claude_env_vars() {
     fs::create_dir_all(&providers_dir).unwrap();
     fs::write(
         providers_dir.join("claude.toml"),
-        "[proxy]\ndisplay_name = \"Proxy\"\nANTHROPIC_BASE_URL = \"https://example.com\"\nANTHROPIC_AUTH_TOKEN = \"sk-ant-xxx\"\n",
+        "[proxy]\ndisplay_name = \"Proxy\"\ndescription = \"API access\"\nbase_url = \"https://example.com\"\napi_key = \"sk-ant-xxx\"\n",
     )
     .unwrap();
 
-    let providers = load_providers_for_agent(&providers_dir, "claude");
+    let providers = load_providers_for_agent(&providers_dir, "claude").unwrap();
     assert_eq!(providers.len(), 1);
     let ProviderSettings::Claude(config) = &providers[0].settings else {
         panic!("expected claude settings");
@@ -470,14 +566,14 @@ fn load_providers_parses_claude_env_vars() {
         config
             .env_vars
             .get("ANTHROPIC_BASE_URL")
-            .map(|s| s.as_str()),
+            .and_then(serde_json::Value::as_str),
         Some("https://example.com")
     );
     assert_eq!(
         config
             .env_vars
             .get("ANTHROPIC_AUTH_TOKEN")
-            .map(|s| s.as_str()),
+            .and_then(serde_json::Value::as_str),
         Some("sk-ant-xxx")
     );
     assert!(!config.env_vars.contains_key("display_name"));
@@ -503,7 +599,7 @@ fn seed_default_providers_creates_official_for_detected_agent() {
     let cache = DetectCache::from_map(agents);
     seed_default_providers(&paths, &cache);
 
-    let providers = load_providers_for_agent(&paths.providers_dir(), "claude");
+    let providers = load_providers_for_agent(&paths.providers_dir(), "claude").unwrap();
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0].name, "official");
     assert_eq!(providers[0].display_name, "Anthropic");
@@ -518,14 +614,14 @@ fn seed_default_providers_skips_existing_config() {
     fs::create_dir_all(&providers_dir).unwrap();
     fs::write(
         providers_dir.join("claude.toml"),
-        "[custom]\ndisplay_name = \"Custom\"\n",
+        "[custom]\ndisplay_name = \"Custom\"\ndescription = \"Custom login\"\n",
     )
     .unwrap();
 
     let cache = DetectCache::new(&paths);
     seed_default_providers(&paths, &cache);
 
-    let providers = load_providers_for_agent(&providers_dir, "claude");
+    let providers = load_providers_for_agent(&providers_dir, "claude").unwrap();
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0].name, "custom");
 }
@@ -545,79 +641,71 @@ fn seed_default_providers_only_seeds_supported_agents() {
 }
 
 #[test]
-fn load_providers_parses_codex_http_headers() {
+fn codex_passes_extra_http_headers_to_config_and_requests() {
     let temp = tempfile::tempdir().unwrap();
-    let providers_dir = temp.path().join(".arc-cli").join("providers");
+    let paths = ArcPaths::with_user_home(temp.path());
+    let providers_dir = paths.providers_dir();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
     fs::create_dir_all(&providers_dir).unwrap();
     fs::write(
         providers_dir.join("codex.toml"),
-        "[proxy]\ndisplay_name = \"Proxy\"\napi_key = \"sk-test\"\nbase_url = \"https://example.com\"\n\n[proxy.http_headers]\nX-Custom = \"val1\"\nAnother = \"val2\"\n",
+        format!(
+            r#"
+[proxy]
+display_name = "Proxy"
+description = "API access"
+api_key = "sk-test"
+base_url = "{base_url}"
+
+[proxy.http_headers]
+X-Custom = "extra"
+x-openai-actor-authorization = "custom-actor"
+"#,
+        ),
     )
     .unwrap();
 
-    let providers = load_providers_for_agent(&providers_dir, "codex");
+    let providers = load_providers_for_agent(&providers_dir, "codex").unwrap();
     assert_eq!(providers.len(), 1);
-    let ProviderSettings::Codex(config) = &providers[0].settings else {
-        panic!("expected codex settings");
-    };
-    assert_eq!(config.http_headers.len(), 2);
-    assert_eq!(
-        config.http_headers.get("X-Custom").map(|s| s.as_str()),
-        Some("val1")
-    );
-    assert_eq!(
-        config.http_headers.get("Another").map(|s| s.as_str()),
-        Some("val2")
-    );
-}
-
-#[test]
-fn provider_switch_writes_codex_http_headers() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let codex_dir = temp.path().join(".codex");
-    fs::create_dir_all(&codex_dir).unwrap();
-
-    let provider = ProviderInfo {
-        name: "proxy".to_string(),
-        display_name: "My Proxy".to_string(),
-        description: String::new(),
-        agent: "codex".to_string(),
-        settings: ProviderSettings::Codex(CodexProviderConfig {
-            api_key: Some("sk-test".to_string()),
-            base_url: Some("https://example.com".to_string()),
-            http_headers: BTreeMap::from([
-                ("X-Custom".to_string(), "val1".to_string()),
-                ("Another".to_string(), "val2".to_string()),
-            ]),
-        }),
-    };
-
-    apply_provider(&paths, &provider).unwrap();
-    let content = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
-    assert!(content.contains("[model_providers.proxy.http_headers]"));
-    assert!(content.contains("X-Custom = \"val1\""));
-    assert!(content.contains("Another = \"val2\""));
-}
-
-#[test]
-fn provider_switch_omits_empty_codex_http_headers() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-
-    let provider = ProviderInfo {
-        name: "proxy".to_string(),
-        display_name: "My Proxy".to_string(),
-        description: String::new(),
-        agent: "codex".to_string(),
-        settings: ProviderSettings::Codex(CodexProviderConfig {
-            api_key: Some("sk-test".to_string()),
-            base_url: Some("https://example.com".to_string()),
-            ..Default::default()
-        }),
-    };
-
-    apply_provider(&paths, &provider).unwrap();
+    apply_provider(&paths, &providers[0]).unwrap();
     let content = fs::read_to_string(temp.path().join(".codex").join("config.toml")).unwrap();
-    assert!(!content.contains("http_headers"));
+    let config = toml::from_str::<toml::Value>(&content).unwrap();
+    let headers = config["model_providers"]["OpenAI"]["http_headers"]
+        .as_table()
+        .unwrap();
+    assert_eq!(headers.len(), 2);
+    assert_eq!(
+        headers["x-openai-actor-authorization"].as_str(),
+        Some("custom-actor")
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = String::new();
+        let mut reader = BufReader::new(&stream);
+        loop {
+            let mut line = String::new();
+            let bytes_read = reader.read_line(&mut line).unwrap();
+            if bytes_read == 0 || line == "\r\n" {
+                break;
+            }
+            request.push_str(&line);
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .unwrap();
+        request
+    });
+
+    let result = test_provider(&providers[0]);
+    assert!(result.ok, "provider test failed: {}", result.message);
+    let request = server.join().unwrap().to_ascii_lowercase();
+    assert!(request.starts_with("get /v1/models http/1.1\r\n"));
+    assert!(request.contains("authorization: bearer sk-test\r\n"));
+    assert!(request.contains("x-openai-actor-authorization: custom-actor\r\n"));
+    assert!(request.contains("x-custom: extra\r\n"));
 }

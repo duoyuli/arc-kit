@@ -44,7 +44,7 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
     if *fmt == OutputFormat::Json {
         let mut items: Vec<ProviderItem> = Vec::new();
         for agent in supported_provider_agents() {
-            let providers = load_providers_for_agent(&providers_dir, agent);
+            let providers = load_providers_for_agent(&providers_dir, agent)?;
             let active = read_active_provider(&providers_dir, agent);
             let agent_name = agent_display_name(agent).to_string();
             for provider in &providers {
@@ -73,7 +73,7 @@ fn list(paths: &ArcPaths, fmt: &OutputFormat) -> Result<(), ArcError> {
     let mut all_providers: Vec<ProviderInfo> = Vec::new();
     let mut active_providers: HashMap<String, String> = HashMap::new();
     for agent in supported_provider_agents() {
-        let providers = load_providers_for_agent(&providers_dir, agent);
+        let providers = load_providers_for_agent(&providers_dir, agent)?;
         if let Some(active) = read_active_provider(&providers_dir, agent) {
             active_providers.insert(agent.to_string(), active);
         }
@@ -136,7 +136,7 @@ fn use_provider(
                 if !supports_provider_agent(agent) {
                     return Err(ArcError::new(format!("Unsupported agent '{agent}'.")));
                 }
-                let providers = load_providers_for_agent(&providers_dir, agent);
+                let providers = load_providers_for_agent(&providers_dir, agent)?;
                 providers
                     .into_iter()
                     .find(|p| p.name == name)
@@ -178,7 +178,7 @@ fn interactive_select(paths: &ArcPaths) -> Result<ProviderInfo, ArcError> {
     let mut all_providers: Vec<ProviderInfo> = Vec::new();
     let mut active_providers: HashMap<String, String> = HashMap::new();
     for agent in supported_provider_agents() {
-        let providers = load_providers_for_agent(&providers_dir, agent);
+        let providers = load_providers_for_agent(&providers_dir, agent)?;
         if let Some(active) = read_active_provider(&providers_dir, agent) {
             active_providers.insert(agent.to_string(), active);
         }
@@ -198,7 +198,7 @@ fn resolve_provider_by_name(
 ) -> Result<ProviderInfo, ArcError> {
     let mut found: Vec<ProviderInfo> = Vec::new();
     for agent in supported_provider_agents() {
-        let providers = load_providers_for_agent(providers_dir, agent);
+        let providers = load_providers_for_agent(providers_dir, agent)?;
         if let Some(p) = providers.into_iter().find(|p| p.name == name) {
             found.push(p);
         }
@@ -227,7 +227,7 @@ fn test(
     // Collect providers to test.
     let providers_to_test: Vec<ProviderInfo> = match (name, agent) {
         (Some(name), Some(agent)) => {
-            let providers = load_providers_for_agent(&providers_dir, agent);
+            let providers = load_providers_for_agent(&providers_dir, agent)?;
             match providers.into_iter().find(|p| p.name == name) {
                 Some(p) => vec![p],
                 None => {
@@ -246,7 +246,7 @@ fn test(
             let active = read_active_provider(&providers_dir, agent);
             match active {
                 Some(name) => {
-                    let providers = load_providers_for_agent(&providers_dir, agent);
+                    let providers = load_providers_for_agent(&providers_dir, agent)?;
                     match providers.into_iter().find(|p| p.name == name) {
                         Some(p) => vec![p],
                         None => {
@@ -266,7 +266,7 @@ fn test(
             let mut result = Vec::new();
             for agent in supported_provider_agents() {
                 if let Some(active_name) = read_active_provider(&providers_dir, agent) {
-                    let providers = load_providers_for_agent(&providers_dir, agent);
+                    let providers = load_providers_for_agent(&providers_dir, agent)?;
                     if let Some(p) = providers.into_iter().find(|p| p.name == active_name) {
                         result.push(p);
                     }

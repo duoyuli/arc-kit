@@ -1,32 +1,35 @@
-# Codex — Provider 配置
+# Codex provider configuration
 #
-# 每个 [section] 是一个可切换的 provider profile。
-# 切换命令：arc provider use <name>
+# Each [section] is a switchable provider profile.
+# Switch with: arc provider use <name> --agent codex
 #
-# 可用字段：
-#   display_name   显示名称
-#   description    简要描述
-#   base_url       API 地址（proxy 必填）
-#   api_key        OpenAI API Key（proxy 必填）
-#   http_headers   静态 HTTP 头（可选，map<string,string>，写入 codex config）
+# Common fields (all strings):
+#   display_name   Name shown when switching (required)
+#   description    Short description (required)
+#   base_url       Model API endpoint (required with api_key)
+#   api_key        API key (required with base_url)
 #
-# 说明：
-#   仅有 display_name / description 的 profile 视为 auth-only 登录态。
-#   arc 在切离这类 profile 时，会按 provider 名保存当前 ~/.codex/auth.json 快照；
-#   切到 proxy 时，~/.codex/auth.json 会被重写为仅含 OPENAI_API_KEY；
-#   后续切回某个 auth-only profile 时，会恢复该 profile 自己的快照。
+# Auth-only profiles may omit both base_url and api_key or leave both empty.
+# Leaving an auth-only profile snapshots ~/.codex/auth.json by profile name;
+# returning to that profile restores its snapshot.
+# API key profiles write model_provider = "OpenAI"; base_url is copied unchanged,
+# and api_key maps to experimental_bearer_token under model_providers.OpenAI.
+# They also rewrite auth.json to contain only OPENAI_API_KEY, as before.
+# All other fields are copied unchanged into model_providers.OpenAI.
+# The native name is fixed to "OpenAI". Defaults: wire_api = "responses", requires_openai_auth = false,
+# and http_headers = { "x-openai-actor-authorization" = "local-image-extension" }.
+# Extra fields override defaults; the native name and common credentials take precedence.
 
 [official]
 display_name = "OpenAI"
 description = "OpenAI 官方订阅"
 
-# — 示例：自定义代理 —
+# Example: custom API endpoint
 #
-# [my-proxy]
-# display_name = "My Proxy"
-# description = "通过中转站访问 OpenAI API"
-# base_url = "https://your-proxy.example.com"
+# [global-infra]
+# display_name = "Global Infra"
+# description = "Subscription access"
+# base_url = "https://global-infra.net"
 # api_key = "sk-xxx"
-#
-# [my-proxy.http_headers]
-# X-Custom-Header = "value"
+# request_max_retries = 5
+# supports_websockets = true

@@ -69,7 +69,7 @@ impl EffectiveConfig {
 
         let mut profile_found = false;
         for agent in supported_provider_agents() {
-            let providers = load_providers_for_agent(&providers_dir, agent);
+            let providers = load_providers_for_agent(&providers_dir, agent)?;
             if !providers.iter().any(|p| p.name == name) {
                 continue;
             }

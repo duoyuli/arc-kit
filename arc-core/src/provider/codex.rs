@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -13,9 +12,11 @@ use crate::io::{
 };
 use crate::paths::ArcPaths;
 
-use super::{CodexProviderConfig, ProviderInfo, ProviderSettings};
+use super::{CodexProviderConfig, ProviderBaseConfig, ProviderInfo, ProviderSettings};
 
 const CODEX_MODEL_PROVIDER_NAME: &str = "OpenAI";
+pub(super) const CODEX_HTTP_HEADERS: [(&str, &str); 1] =
+    [("x-openai-actor-authorization", "local-image-extension")];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CodexProviderMode {
@@ -29,32 +30,15 @@ struct FileState {
     previous: Option<String>,
 }
 
-pub fn parse_provider_config(section: &toml::Table) -> ProviderSettings {
-    ProviderSettings::Codex(CodexProviderConfig {
-        api_key: section
-            .get("api_key")
-            .and_then(toml::Value::as_str)
-            .map(str::to_string),
-        base_url: section
-            .get("base_url")
-            .and_then(toml::Value::as_str)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string),
-        http_headers: parse_http_headers(section),
-    })
-}
-
-fn parse_http_headers(section: &toml::Table) -> BTreeMap<String, String> {
-    let Some(table) = section.get("http_headers").and_then(toml::Value::as_table) else {
-        return BTreeMap::new();
-    };
-    table
-        .iter()
-        .filter_map(|(k, v)| {
-            let value = v.as_str()?;
-            Some((k.clone(), value.to_string()))
-        })
-        .collect()
+pub fn parse_provider_config(
+    base: &ProviderBaseConfig,
+    extra: &toml::Table,
+) -> Result<ProviderSettings> {
+    Ok(ProviderSettings::Codex(CodexProviderConfig {
+        api_key: base.api_key.clone(),
+        base_url: base.base_url.clone(),
+        extra: extra.clone(),
+    }))
 }
 
 pub fn apply_provider(
@@ -87,7 +71,7 @@ pub fn apply_provider(
 
         let target_snapshot = resolve_target_auth_snapshot(paths, new)?;
         write_auth_config(paths, config, new_mode, target_snapshot.as_deref())?;
-        write_main_config(paths, new, config)?;
+        write_main_config(paths, config)?;
         Ok(())
     })();
 
@@ -316,21 +300,17 @@ fn rollback_file_states(states: &[FileState]) -> Result<()> {
     Ok(())
 }
 
-fn write_main_config(
-    paths: &ArcPaths,
-    provider: &ProviderInfo,
-    config: &CodexProviderConfig,
-) -> Result<()> {
+fn write_main_config(paths: &ArcPaths, config: &CodexProviderConfig) -> Result<()> {
     let config_path = paths.user_home().join(".codex").join("config.toml");
     let mut config_table = read_toml_table(&config_path);
 
-    if let Some(base_url) = &config.base_url {
+    if let (Some(base_url), Some(api_key)) = (&config.base_url, &config.api_key) {
         config_table.insert(
             "model_provider".to_string(),
-            toml::Value::String(provider.name.clone()),
+            toml::Value::String(CODEX_MODEL_PROVIDER_NAME.to_string()),
         );
 
-        let mut provider_table = toml::Table::new();
+        let mut provider_table = config.extra.clone();
         provider_table.insert(
             "name".to_string(),
             toml::Value::String(CODEX_MODEL_PROVIDER_NAME.to_string()),
@@ -339,17 +319,24 @@ fn write_main_config(
             "base_url".to_string(),
             toml::Value::String(base_url.clone()),
         );
+        provider_table
+            .entry("wire_api")
+            .or_insert_with(|| toml::Value::String("responses".to_string()));
+        provider_table
+            .entry("requires_openai_auth")
+            .or_insert(toml::Value::Boolean(false));
+        provider_table.insert(
+            "experimental_bearer_token".to_string(),
+            toml::Value::String(api_key.clone()),
+        );
 
-        if !config.http_headers.is_empty() {
-            let headers_table = toml::Value::Table(
-                config
-                    .http_headers
-                    .iter()
-                    .map(|(k, v)| (k.clone(), toml::Value::String(v.clone())))
-                    .collect(),
-            );
-            provider_table.insert("http_headers".to_string(), headers_table);
-        }
+        let headers_table = CODEX_HTTP_HEADERS
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), toml::Value::String(v.to_string())))
+            .collect();
+        provider_table
+            .entry("http_headers")
+            .or_insert(toml::Value::Table(headers_table));
 
         let model_providers = config_table
             .entry("model_providers".to_string())
@@ -359,7 +346,10 @@ fn write_main_config(
                 "failed to write Codex config.toml: model_providers is not a table",
             ));
         };
-        model_providers.insert(provider.name.clone(), toml::Value::Table(provider_table));
+        model_providers.insert(
+            CODEX_MODEL_PROVIDER_NAME.to_string(),
+            toml::Value::Table(provider_table),
+        );
     } else {
         config_table.remove("model_provider");
     }

@@ -29,7 +29,7 @@ arc provider test
 ```
 
 Project-level provider requirements can be declared in `arc.toml` and applied with `arc project apply`.
-When writing Codex proxy providers, `arc-kit` keeps Codex's native provider `name` field fixed as `OpenAI`; the arc provider profile name still selects the profile.
+Provider profiles share `display_name`, `description`, `base_url`, and `api_key`. Each agent maps credentials to its native configuration and receives additional profile settings. Auth-only profiles retain their existing login behavior.
 
 ### Skill Management
 
@@ -203,20 +203,97 @@ arc provider use official --agent codex
 arc provider test
 ```
 
-Rules:
-
-- `arc provider` is equivalent to `arc provider list`.
-- Non-interactive `provider use` requires a provider name.
-- If the same provider name exists for multiple agents, pass `--agent`.
-- Codex proxy providers are written to Codex with native `name = "OpenAI"`; the arc provider name still selects the profile.
-- `provider test` exits with `1` if any tested provider fails.
-
 Provider config files:
 
 ```text
 ~/.arc-cli/providers/claude.toml
 ~/.arc-cli/providers/codex.toml
 ```
+
+Each profile has four common fields. `display_name` and `description` are required strings. API key profiles also require non-empty string `base_url` and `api_key` together. Auth-only profiles may omit both credentials or set both to empty strings.
+
+| Common field | Purpose | Claude Code output | Codex output |
+| --- | --- | --- | --- |
+| `display_name` | Name shown when switching | Metadata only | Metadata only |
+| `description` | Profile description | Metadata only | Metadata only |
+| `base_url` | Model API endpoint | `env.ANTHROPIC_BASE_URL` | `model_providers.OpenAI.base_url` |
+| `api_key` | API key | `env.ANTHROPIC_AUTH_TOKEN` | `model_providers.OpenAI.experimental_bearer_token` |
+
+Other fields are handled by each agent:
+
+- Claude Code converts them to JSON under `~/.claude/settings.json`'s `env` object, preserving strings, numbers, booleans, arrays, and nested tables. Switching removes the previous profile's managed fields and preserves unrelated environment variables and settings.
+- Codex copies them unchanged into `[model_providers.OpenAI]` in `~/.codex/config.toml` when applying an API key profile. Switching replaces that table and preserves unrelated settings and other provider tables.
+- Codex fixes `model_provider = "OpenAI"` and the native `name = "OpenAI"`. Defaults are `wire_api = "responses"`, `requires_openai_auth = false`, and `http_headers = { "x-openai-actor-authorization" = "local-image-extension" }`. Explicit extra fields replace these defaults; `http_headers` follows the same generic passthrough as other extra fields. `provider test` uses the resulting static headers.
+- The native Codex name remains `OpenAI`; common credentials take precedence over their native aliases in extra fields. Display metadata is never written into native configuration.
+- Codex auth handling is unchanged: leaving an auth-only profile saves its login snapshot; returning restores it and removes the native `model_provider` selection. API key profiles still write only `OPENAI_API_KEY` to `auth.json`.
+
+Example Claude Code profile in `~/.arc-cli/providers/claude.toml`:
+
+```toml
+[deepseek]
+display_name = "DeepSeek"
+description = "DeepSeek API usage-based billing"
+base_url = "https://api.deepseek.com/anthropic"
+api_key = "sk-xxx"
+ANTHROPIC_MODEL = "deepseek-flash[1m]"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "deepseek-flash[1m]"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "deepseek-flash[1m]"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "deepseek-flash"
+CLAUDE_CODE_SUBAGENT_MODEL = "deepseek-flash"
+CLAUDE_CODE_EFFORT_LEVEL = "max"
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = 786432
+```
+
+`arc provider use deepseek --agent claude` writes:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-xxx",
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_MODEL": "deepseek-flash[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": 786432
+  }
+}
+```
+
+Example Codex profile in `~/.arc-cli/providers/codex.toml`:
+
+```toml
+[global-infra]
+display_name = "Global Infra"
+description = "Subscription access"
+base_url = "https://global-infra.net"
+api_key = "sk-xxx"
+```
+
+`arc provider use global-infra --agent codex` writes:
+
+```toml
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://global-infra.net"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "sk-xxx"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+```
+
+The native Codex fields are described in the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). Use common `base_url` and `api_key` fields in Claude profiles instead of native credential names, and add missing display metadata to older profiles. Re-run `provider use` after upgrading to apply the current format.
+
+Command rules:
+
+- `arc provider` is equivalent to `arc provider list`.
+- Non-interactive `provider use` requires a provider name. If a name exists for multiple agents, pass `--agent`.
+- Invalid provider files, missing required fields, incorrect common field types, or incomplete credential pairs cause provider commands to exit with `1` before switching.
+- `provider test` exits with `1` if any tested provider fails.
 
 ### Skills
 
