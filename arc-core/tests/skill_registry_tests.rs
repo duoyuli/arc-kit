@@ -1,93 +1,114 @@
 use std::fs;
 
 use arc_core::detect::DetectCache;
-use arc_core::models::SkillOrigin;
+use arc_core::market::catalog::CatalogManager;
+use arc_core::models::{ResourceInfo, ResourceKind, SkillEntry, SkillOrigin};
 use arc_core::paths::ArcPaths;
 use arc_core::skill::SkillRegistry;
 
-#[test]
-fn registry_list_all_includes_builtin_skills() {
+// 所有来源与检测结果都由测试构造，避免依赖本机 agent 或产品附带的技能。
+fn setup() -> (tempfile::TempDir, ArcPaths, SkillRegistry) {
     let temp = tempfile::tempdir().unwrap();
     let paths = ArcPaths::with_user_home(temp.path());
-    let cache = DetectCache::new(&paths);
+    let registry = SkillRegistry::new(paths.clone(), DetectCache::from_map(Default::default()));
+    (temp, paths, registry)
+}
 
-    let registry = SkillRegistry::new(paths, cache);
+fn add_local(paths: &ArcPaths, name: &str) -> std::path::PathBuf {
+    let source = paths.local_skills_dir().join(name);
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "# 本地测试技能\n").unwrap();
+    source
+}
+
+fn add_market(paths: &ArcPaths, name: &str) {
+    CatalogManager::new(paths.clone())
+        .rebuild(&[ResourceInfo {
+            id: format!("fixture-market/{name}"),
+            kind: ResourceKind::Skill,
+            name: name.to_string(),
+            source_id: "fixture-market".to_string(),
+            summary: "市场测试技能".to_string(),
+        }])
+        .unwrap();
+}
+
+#[test]
+fn registry_lists_local_and_market_with_empty_builtin_source() {
+    let (_temp, paths, registry) = setup();
+    add_local(&paths, "local-skill");
+    add_market(&paths, "market-skill");
+
     let skills = registry.list_all();
-    assert!(
-        skills.iter().any(|s| s.name == "arc-cli-usage"),
-        "should include built-in arc-cli-usage skill"
+
+    assert_eq!(skills.len(), 2);
+    assert_eq!(skills[0].name, "local-skill");
+    assert_eq!(skills[0].origin, SkillOrigin::Local);
+    assert_eq!(skills[1].name, "market-skill");
+    assert_eq!(
+        skills[1].origin,
+        SkillOrigin::Market {
+            source_id: "fixture-market".to_string()
+        }
     );
 }
 
 #[test]
-fn registry_list_all_includes_local_skills() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let cache = DetectCache::new(&paths);
+fn registry_local_overrides_market_in_list_and_find() {
+    let (_temp, paths, registry) = setup();
+    add_market(&paths, "shared-skill");
+    let local = add_local(&paths, "shared-skill");
 
-    let local_dir = paths.local_skills_dir();
-    let my_skill = local_dir.join("my-local-skill");
-    fs::create_dir_all(&my_skill).unwrap();
-    fs::write(my_skill.join("SKILL.md"), "Local skill body").unwrap();
-
-    let registry = SkillRegistry::new(paths, cache);
+    // 使用真实的同名市场项与本地项验证优先级，不以空内置目录制造虚假冲突。
     let skills = registry.list_all();
-    let found = skills.iter().find(|s| s.name == "my-local-skill");
-    assert!(found.is_some());
-    assert_eq!(found.unwrap().origin, SkillOrigin::Local);
-}
-
-#[test]
-fn registry_local_overrides_builtin_on_same_name() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let cache = DetectCache::new(&paths);
-
-    let local_dir = paths.local_skills_dir();
-    let local_skill = local_dir.join("arc-cli-usage");
-    fs::create_dir_all(&local_skill).unwrap();
-    fs::write(local_skill.join("SKILL.md"), "Local override").unwrap();
-
-    let registry = SkillRegistry::new(paths, cache);
-    let skills = registry.list_all();
-    let entry = skills.iter().find(|s| s.name == "arc-cli-usage").unwrap();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].origin, SkillOrigin::Local);
+    assert_eq!(skills[0].source_path, local);
+    let entry = registry.find("shared-skill").unwrap();
     assert_eq!(entry.origin, SkillOrigin::Local);
-}
-
-#[test]
-fn registry_find_returns_highest_priority() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let cache = DetectCache::new(&paths);
-
-    let local_dir = paths.local_skills_dir();
-    let local_skill = local_dir.join("arc-cli-usage");
-    fs::create_dir_all(&local_skill).unwrap();
-    fs::write(local_skill.join("SKILL.md"), "Local override").unwrap();
-
-    let registry = SkillRegistry::new(paths, cache);
-    let entry = registry.find("arc-cli-usage").unwrap();
-    assert_eq!(entry.origin, SkillOrigin::Local);
+    assert_eq!(entry.source_path, local);
 }
 
 #[test]
 fn registry_find_returns_none_for_unknown() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let cache = DetectCache::new(&paths);
-    let registry = SkillRegistry::new(paths, cache);
+    let (_temp, _paths, registry) = setup();
     assert!(registry.find("nonexistent-xyz").is_none());
 }
 
 #[test]
-fn registry_resolve_source_path_materializes_builtin() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = ArcPaths::with_user_home(temp.path());
-    let cache = DetectCache::new(&paths);
-    let registry = SkillRegistry::new(paths.clone(), cache);
+fn registry_resolves_local_source_without_creating_builtin_cache() {
+    let (_temp, paths, registry) = setup();
+    let source = add_local(&paths, "local-skill");
+    let entry = registry.find("local-skill").unwrap();
 
-    let entry = registry.find("arc-cli-usage").unwrap();
-    let source_path = registry.resolve_source_path(&entry).unwrap();
-    assert!(source_path.join("SKILL.md").is_file());
-    assert_eq!(source_path, paths.builtin_cache_dir().join("arc-cli-usage"));
+    assert_eq!(registry.resolve_source_path(&entry).unwrap(), source);
+    assert_eq!(
+        registry.resolve_source_path_readonly(&entry).unwrap(),
+        source
+    );
+    assert!(!paths.builtin_cache_dir().exists());
+}
+
+#[test]
+fn readonly_builtin_resolution_requires_existing_cache_without_materializing() {
+    let (_temp, paths, registry) = setup();
+    let source = paths.builtin_cache_dir().join("cached-builtin");
+    // 直接构造内置条目，独立验证只读解析不会触发产品资源的物化。
+    let entry = SkillEntry {
+        name: "cached-builtin".to_string(),
+        origin: SkillOrigin::BuiltIn,
+        summary: String::new(),
+        source_path: source.clone(),
+        installed_targets: Vec::new(),
+        market_repo: None,
+    };
+
+    assert!(registry.resolve_source_path_readonly(&entry).is_err());
+    assert!(!paths.builtin_cache_dir().exists());
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "# 已有缓存\n").unwrap();
+    assert_eq!(
+        registry.resolve_source_path_readonly(&entry).unwrap(),
+        source
+    );
 }

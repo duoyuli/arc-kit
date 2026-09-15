@@ -47,7 +47,9 @@ Skill 来源按优先级解析：
 | --- | --- | --- |
 | local | `~/.arc-cli/skills/<name>/` | 用户自定义 skill |
 | market | 远程 git 仓库 | 团队或社区共享 skill |
-| built-in | 嵌入二进制 | arc-kit 自带 skill |
+| built-in | 嵌入二进制 | 从 `built-in/skill/` 打包的可选 skill |
+
+内置来源机制继续保留，当前源码树未附带任何 skill。即使没有可用技能，非交互式 `skill install` 仍必须提供技能名。安装找不到的技能时以 `1` 退出，JSON 模式同时输出失败结果。
 
 ### Market 同步
 
@@ -115,7 +117,8 @@ arc skill list          # 列出 skill
 arc skill install       # 安装 skill
 arc skill uninstall     # 卸载 skill
 arc skill info          # 显示 skill 详情
-arc project apply       # 应用 arc.toml 配置
+arc project apply       # 根据 arc.toml 对齐受管项目技能
+arc project clean       # 清除受管项目技能，保留 arc.toml
 arc project edit        # 交互式编辑 arc.toml skills
 ```
 
@@ -154,7 +157,7 @@ arc project apply
 arc status
 ```
 
-如果当前仓库没有 `arc.toml`，交互式 `arc project apply` 会打开项目 skill 编辑器，帮助创建配置。
+运行 `arc project apply` 前需要创建 `arc.toml`。配置缺失或无效时，文本与 JSON 模式都以 `1` 退出。
 
 ### 交互模式
 
@@ -191,6 +194,7 @@ JSON 输出包含这些顶层模块：
 - `agents`
 - `catalog`
 - `actions`
+- `tracking`：全局/项目安装记录数量、未解决旧记录、待恢复操作及台账错误
 
 ### Providers
 
@@ -333,7 +337,7 @@ arc skill uninstall my-skill --all
 | --- | --- |
 | Claude Code | `./.claude/skills/<name>` |
 | Codex | `./.codex/skills/<name>` |
-| Cursor CLI | `./.cursor/skills-cursor/<name>` |
+| Cursor CLI | `./.cursor/skills/<name>` |
 | OpenCode | `./.opencode/skills/<name>` |
 | Gemini CLI | `./.gemini/skills/<name>` |
 | Kimi CLI | `./.kimi/skills/<name>` |
@@ -359,7 +363,33 @@ arc market remove <git-url-or-id>
 ~/.arc-cli/state/skills/installs.json
 ```
 
-如果跟踪元数据损坏，arc 会把它隔离为 `installs.corrupt.<unix_ts>.json`，然后以空跟踪状态继续。
+v2 台账分别记录每个实际落点。同一技能可以同时安装在全局和多个项目中，不会互相覆盖记录：
+
+```json
+{
+  "schema_version": 2,
+  "installs": [
+    {
+      "scope": "project",
+      "project_root": "/Users/alice/work/project-a",
+      "agent": "codex",
+      "skill": "team-review",
+      "target_path": "/Users/alice/work/project-a/.codex/skills/team-review",
+      "source_path": "/Users/alice/.arc-cli/skills/team-review",
+      "strategy": "symlink",
+      "source_fingerprint": "sha256:6cd3e861cdd33b9b276fd2a03fe253ad5674664d2a2911cb7944625fbff3b4f3",
+      "target_fingerprint": null
+    }
+  ],
+  "unresolved_legacy": []
+}
+```
+
+`target_path` 表示安装条目本身，不会解析成软链接背后的来源。复制安装还保存副本的 `target_fingerprint`。共享安装服务通过进程锁逐目标提交，使用操作日志和同文件系统暂存进行恢复。删除失败不会丢弃记录；替换已提交后，即使备份清理失败也不会回滚新版本。
+
+旧全局数组可以只读检查；写操作先备份为 `installs.v1.*.json`，再迁移可唯一验证的落点，无需探测到 agent。无法验证的原记录保存在 `unresolved_legacy`。只读命令报告损坏台账，写操作可将其隔离为 `installs.corrupt.*.json`；丢失元数据后不会自动认领已有目标，未知的新版本台账也不会被覆盖。
+
+新指纹使用带明确字段边界的 SHA-256。使用旧指纹的历史副本还必须与当前来源一致才能迁移；来源已变化或不可用时，保留原始记录与副本并报告未解决。存在待恢复操作时，台账缺失或损坏都需要人工检查：保留目标与操作日志，不会将已提交安装猜测为未提交操作并回滚。
 
 ### 项目配置
 
@@ -372,13 +402,26 @@ arc project apply
 arc project apply --agent codex
 arc project apply --all-agents
 arc project edit
+arc project apply --dry-run --agent codex --format json
+arc project apply --adopt-existing --agent codex
+arc project clean --agent codex
+arc project clean --project-root /path/to/project --dry-run --format json
 ```
 
 `arc project apply` 会：
 
 - 接入 `arc.toml` 中声明的 market；
 - 切换到要求的 provider；
-- 为选中的 agent 安装项目级 skill。
+- 对齐所选 agent 的全部声明技能和受管项目安装；
+- 安装缺失目标、刷新来源变化，并清理不再需要且归属验证通过的目标；声明为空时也会清理。
+
+已有但未追踪的声明目标报告 `unmanaged`；通过 `--adopt-existing` 显式接管与当前来源匹配的目标。无关的手工技能、被替换的链接、被修改的副本会被保留。所需来源不可用会阻止新目标变更，不会当作需求已移除。预检查有问题时不启动本次新技能计划；执行中失败则停止后续动作，已完成的目标保留记录。
+
+`--agent` 与 `--all-agents` 互斥，显式选择同时约束安装和清理。不传参数时，已有记录的项目沿用台账和待恢复操作中的 agent；`--all-agents` 再加上当前探测到的项目 agent。已记录目标的检查、修复、接管、刷新、清理不依赖 agent 可执行文件；创建此前未记录的新落点仍需要探测通过。
+
+`project clean` 清除受管安装但保留声明，后续 apply 可重新安装。项目根目录缺失或不可访问时保留记录。移动后的项目属于新范围，需要显式接管其中已有目标，历史记录继续保留。全局 `skill` 命令和 `market update` 不改写项目安装条目，也不删除项目记录；共享来源更新仍可能影响已有项目软链接读取到的内容。
+
+`--dry-run` 只读取本地状态，不写目标、日志、缓存、锁文件、迁移或恢复数据。缺少本地来源、其他进程正在写入或存在待恢复操作时，报告 `unresolved`/错误并退出 `1`；可执行的有效计划退出 `0`，存在待变更项不算失败。普通命令先恢复所选范围内的待完成操作，再生成新计划。人类输出与 JSON 展示相同的逐目标动作、路径和冲突。`arc status` 为只读，通过 `project.installations` 展示这些信息；全局 skill JSON 标识 `scope: "global"` 并给出受管的全局落点。
 
 最小 `arc.toml`：
 
@@ -473,7 +516,7 @@ arc project apply --format json --agent codex
 
 ### JSON 与退出码
 
-JSON 输出使用顶层 `schema_version`。当前 schema version：`"5"`。
+JSON 输出使用顶层 `schema_version`，当前版本为 `"6"`。安装台账独立使用数字版本 `2`。
 
 `arc status --format json` 包含：
 
@@ -481,6 +524,7 @@ JSON 输出使用顶层 `schema_version`。当前 schema version：`"5"`。
 - `agents`
 - `catalog`
 - `actions`
+- `tracking`
 
 退出码约定：
 
@@ -493,7 +537,7 @@ JSON 输出使用顶层 `schema_version`。当前 schema version：`"5"`。
 | `arc provider test` 有失败项 | 1 |
 | JSON 序列化失败 | 1 |
 
-写入类 JSON 在可预期且不执行变更的失败场景中可能以 `0` 退出并返回 `ok == false`，例如 `arc project apply --format json` 遇到缺失的 `arc.toml`。自动化必须检查 `ok` 和 `message`，不能只看进程退出码。
+部分命令保留退出 `0`、`ok == false` 的非修改型结构化失败，例如 `arc project edit --format json`。Project apply/clean 和受管安装操作遇到未解决的要求、归属冲突、状态不可用或执行失败时退出 `1`；自动化同时检查退出码和 JSON 结果。
 
 ### JSON 覆盖
 
@@ -528,7 +572,8 @@ JSON 输出不得包含 ANSI 转义序列。
 | `skill install` / `skill uninstall` | 显式 name，并按需提供目标 agent 或 `--all` |
 | `provider use` | 显式 provider name；存在歧义时提供 `--agent` |
 | `market add` / `market remove` / `market update` | 由命令参数完整表达 |
-| `project apply` | 项目 skill 需要安装时提供 `--agent` 或 `--all-agents` |
+| `project apply` | 首次安装显式选择 agent，后续沿用记录范围，清理时同样有效；`--dry-run` 预演，`--adopt-existing` 显式接管匹配的声明目标 |
+| `project clean` | 当前项目，或缺少声明时显式 `--project-root <path>`；可筛选 agent 和使用 `--dry-run` |
 | `project edit` | 仅交互式编辑器；JSON 路径返回结构化失败，不打开编辑器 |
 
 ### 项目配置设计
@@ -542,7 +587,7 @@ JSON 输出不得包含 ANSI 转义序列。
 
 `[mcps]` 和 `[subagents]` 已移除，出现时会按未知字段拒绝。
 
-当 `arc project apply` 在交互模式下运行且缺少 `arc.toml` 时，会打开项目 skill 编辑器创建配置。在非交互模式下缺少 `arc.toml` 时，纯文本路径以 `1` 退出；JSON 路径返回 `WriteResult.ok == false` 且退出码为 `0`。
+`arc project apply` 要求有效的 `arc.toml`，配置缺失或无效时文本和 JSON 都退出 `1`。删除声明文件后，可通过 `project clean --project-root <path>` 清理显式指定、仍存在的项目目录。
 
 ### UI 边界
 
@@ -578,7 +623,7 @@ JSON 输出不得包含 ANSI 转义序列。
 
 ### 环境
 
-- Rust stable toolchain
+- Rust stable toolchain（Rust 1.89 或更新版本）
 - 目标平台为 macOS
 
 ```bash
@@ -625,11 +670,13 @@ CLI 黑盒契约检查（退出码、stderr 文案、JSON 失败结构）位于 
 ├── arc-cli/          # CLI、clap 命令表、用户输出、JSON 结构体
 ├── arc-core/         # 领域逻辑、安装引擎、provider、market、skill、detect、paths、io
 ├── arc-tui/          # 交互 UI；只有这个 crate 依赖 dialoguer
-├── built-in/         # 内置 skill 和 market index
+├── built-in/         # 内置 market 索引及可选 skill 资源目录；当前未附带 skill
 └── Cargo.toml
 ```
 
 ### 模块职责
+
+内置来源测试使用 `arc-core/tests/fixtures/builtin_skills/` 中的专用夹具，这些夹具不会嵌入发布的二进制。
 
 - `arc-core`：业务逻辑、状态、文件系统操作、provider 应用、market 同步、skill registry、安装引擎、检测和项目解析。
 - `arc-cli`：命令定义、命令分发、用户输出和 JSON 响应结构。
@@ -647,7 +694,7 @@ CLI 黑盒契约检查（退出码、stderr 文案、JSON 失败结构）位于 
 - 构建、测试、发版或模块职责变化；
 - 对应的 `README.zh-CN.md` 中文镜像内容。
 
-代码注释和 CLI 提示使用英文。正式文档维护在 `README.md` 和 `README.zh-CN.md` 中。
+代码注释遵循 `AGENTS.md` 使用中文，CLI 提示使用英文。产品用法与开发说明维护在 `README.md` 和 `README.zh-CN.md`；跨模块工程文档由 `project-doc` 管理，建立后以 `docs/index.md` 为入口。目前工程文档库尚未建立；建库时须同步两份 README 的覆盖范围和入口链接。
 
 ### 贡献规则
 

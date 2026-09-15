@@ -32,7 +32,46 @@ impl SkillRegistry {
         &self.cache
     }
 
-    /// Merge all three sources, deduplicate by name using priority (local > built-in > market).
+    pub fn install_global(
+        &self,
+        skill: &SkillEntry,
+        targets: &[String],
+    ) -> super::install::InstallReport {
+        match self.resolve_source_path(skill) {
+            Ok(source) => super::install::install_global_skill(
+                &self.paths,
+                self.detect_cache(),
+                &skill.name,
+                &source,
+                targets,
+            ),
+            Err(err) => {
+                let mut report = super::install::InstallReport::new(
+                    super::install::InstallScope::Global,
+                    None,
+                    false,
+                );
+                report.errors.push(err.message);
+                report
+            }
+        }
+    }
+
+    pub fn tracked_global_installs(
+        &self,
+        skill: Option<&str>,
+    ) -> Result<Vec<super::install::InstallRecord>> {
+        Ok(super::install::inspect_install_ledger(&self.paths)?
+            .installs
+            .into_iter()
+            .filter(|record| {
+                record.scope == super::install::InstallScope::Global
+                    && skill.is_none_or(|name| record.skill == name)
+            })
+            .collect())
+    }
+
+    /// 合并三类来源并按名称去重，优先级为 local > market > built-in。
     pub fn list_all(&self) -> Vec<SkillEntry> {
         let map =
             merge::merge_by_priority(self.scan_market(), self.scan_builtin(), self.scan_local());
@@ -55,10 +94,29 @@ impl SkillRegistry {
                     .map_err(|err| crate::error::ArcError::new(err.to_string()))
             }
             SkillOrigin::Market { source_id } => {
-                self.resolve_market_source_path(source_id, &entry.name)
+                self.resolve_market_source_path(source_id, &entry.name, false)
             }
             SkillOrigin::Local => Ok(entry.source_path.clone()),
         }
+    }
+
+    /// 只解析已有本地来源，不克隆 market，也不物化内置缓存。
+    pub fn resolve_source_path_readonly(&self, entry: &SkillEntry) -> Result<PathBuf> {
+        let path = match &entry.origin {
+            SkillOrigin::BuiltIn => self.paths.builtin_cache_dir().join(&entry.name),
+            SkillOrigin::Market { source_id } => {
+                self.resolve_market_source_path(source_id, &entry.name, true)?
+            }
+            SkillOrigin::Local => entry.source_path.clone(),
+        };
+        if !path.is_dir() {
+            return Err(crate::error::ArcError::new(format!(
+                "source is not available locally for '{}': {}",
+                entry.name,
+                path.display()
+            )));
+        }
+        Ok(path)
     }
 
     /// Bootstrap catalog if needed (safe to call multiple times).
@@ -140,13 +198,25 @@ impl SkillRegistry {
         }
     }
 
-    fn resolve_market_source_path(&self, source_id: &str, name: &str) -> Result<PathBuf> {
+    fn resolve_market_source_path(
+        &self,
+        source_id: &str,
+        name: &str,
+        read_only: bool,
+    ) -> Result<PathBuf> {
         let registry = MarketSourceRegistry::new(self.paths.clone());
         let source = registry.get(source_id).ok_or_else(|| {
             crate::error::ArcError::new(format!("market source '{source_id}' not found"))
         })?;
         let repo_dir = self.paths.market_checkout(&source);
         if !repo_dir.exists() {
+            // 预演和状态检查不能通过下载补齐缺少的本地来源。
+            if read_only {
+                return Err(crate::error::ArcError::new(format!(
+                    "market source '{source_id}' is not available locally: {}",
+                    repo_dir.display()
+                )));
+            }
             self.paths
                 .ensure_arc_home()
                 .map_err(|err| crate::error::ArcError::new(err.to_string()))?;

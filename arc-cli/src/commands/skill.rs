@@ -1,25 +1,23 @@
 use std::fs;
 
 use arc_core::detect::DetectCache;
-use arc_core::engine::InstallEngine;
 use arc_core::error::ArcError;
 use arc_core::market::bootstrap::MarketSyncReport;
 use arc_core::models::{ResourceKind, SkillEntry};
 use arc_core::paths::ArcPaths;
 use arc_core::skill::SkillRegistry;
-use arc_core::skill::tracking::{track_global_skill_install, untrack_global_skill_install};
+use arc_core::skill::install::uninstall_global_skill;
 use arc_tui::{run_skill_browser, run_skill_install_wizard, run_skill_uninstall_wizard};
 use console::style;
 
 use crate::cli::{
     OutputFormat, SkillCommand, SkillInfoArgs, SkillInstallArgs, SkillListArgs, SkillUninstallArgs,
 };
-use crate::commands::common::{CommandMode, command_mode, print_not_found_json, require_name_arg};
-use crate::display::{agent_display_name, agent_display_names};
-use crate::format::{
-    SCHEMA_VERSION, SkillInfoOutput, SkillItem, SkillListOutput, WriteResult, WriteResultItem,
-    print_json,
+use crate::commands::common::{
+    CommandMode, command_mode, print_not_found_json, render_install_report, require_name_arg,
 };
+use crate::display::agent_display_names;
+use crate::format::{SCHEMA_VERSION, SkillInfoOutput, SkillItem, SkillListOutput, print_json};
 
 pub fn run(
     paths: &ArcPaths,
@@ -49,6 +47,7 @@ fn list(
         print_bootstrap_report(&report);
     }
     let mut skills = registry.list_all();
+    let tracked = registry.tracked_global_installs(None)?;
 
     if args.installed {
         skills.retain(|s| !s.installed_targets.is_empty());
@@ -68,9 +67,23 @@ fn list(
             .collect();
         print_json(&SkillListOutput {
             schema_version: SCHEMA_VERSION,
+            scope: "global",
             skills: items,
+            installations: tracked,
         })?;
         return Ok(());
+    }
+
+    if !tracked.is_empty() {
+        println!("Tracked global installations:");
+        for install in &tracked {
+            println!(
+                "  {} -> {}: {}",
+                install.skill,
+                install.agent,
+                install.target_path.display()
+            );
+        }
     }
 
     if skills.is_empty() {
@@ -101,6 +114,10 @@ fn install(
     args: SkillInstallArgs,
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
+    // 参数错误应先于目录和 catalog 初始化处理，空来源也不能绕过校验。
+    if args.name.is_none() && !matches!(command_mode(fmt), CommandMode::Interactive) {
+        require_name_arg(fmt, "Skill", "arc skill install <name> [--agent <agent>]")?;
+    }
     paths
         .ensure_arc_home()
         .map_err(|err| ArcError::new(err.to_string()))?;
@@ -109,18 +126,8 @@ fn install(
     if *fmt != OutputFormat::Json {
         print_bootstrap_report(&report);
     }
-    let engine = InstallEngine::new(cache.clone());
     let mut skills = registry.list_all();
-    if skills.is_empty() {
-        if *fmt == OutputFormat::Json {
-            print_json(&WriteResult {
-                schema_version: SCHEMA_VERSION,
-                ok: false,
-                message: "No skills available.".to_string(),
-                items: Vec::new(),
-            })?;
-            return Ok(());
-        }
+    if skills.is_empty() && args.name.is_none() {
         println!("  {}", style("No skills available.").yellow());
         return Ok(());
     }
@@ -128,9 +135,6 @@ fn install(
     skills.sort_by_key(|s| s.installed_targets.is_empty());
 
     if args.name.is_none() {
-        if !matches!(command_mode(fmt), CommandMode::Interactive) {
-            require_name_arg(fmt, "Skill", "arc skill install <name> [--agent <agent>]")?;
-        }
         let agents = cache.agents_for_install(&ResourceKind::Skill);
         let (selected_names, selected_agents) = run_skill_install_wizard(&skills, &agents)
             .map_err(|err| ArcError::new(format!("interactive install failed: {err}")))?;
@@ -141,17 +145,18 @@ fn install(
             let Some(skill) = skills.iter().find(|s| &s.name == name) else {
                 continue;
             };
-            install_one(paths, &registry, &engine, skill, &selected_agents)?;
+            install_one(&registry, skill, &selected_agents)?;
         }
         return Ok(());
     }
 
     let name = args.name.expect("checked optional name");
     let Some(skill) = skills.into_iter().find(|s| s.name == name) else {
+        let message = format!("skill '{name}' not found.");
         if *fmt == OutputFormat::Json {
-            return print_not_found_json(format!("skill '{name}' not found."));
+            print_not_found_json(&message)?;
         }
-        return Err(ArcError::new(format!("skill '{name}' not found.")));
+        return Err(ArcError::new(message));
     };
     let targets = if args.agent.is_empty() {
         cache.agents_for_install(&ResourceKind::Skill)
@@ -160,139 +165,31 @@ fn install(
     };
 
     if *fmt == OutputFormat::Json {
-        return install_one_json(paths, &registry, &engine, &skill, &targets);
+        return install_one_json(&registry, &skill, &targets);
     }
-    install_one(paths, &registry, &engine, &skill, &targets)
+    install_one(&registry, &skill, &targets)
 }
 
 fn install_one(
-    paths: &ArcPaths,
     registry: &SkillRegistry,
-    engine: &InstallEngine,
     skill: &SkillEntry,
     targets: &[String],
 ) -> Result<(), ArcError> {
-    let mut new_targets = Vec::new();
-    let mut existing_targets = Vec::new();
-    for t in targets {
-        if engine.is_installed_for(&skill.name, &ResourceKind::Skill, t) {
-            existing_targets.push(t.clone());
-        } else {
-            new_targets.push(t.clone());
-        }
-    }
-
-    for t in &existing_targets {
-        let agent_name = agent_display_name(t);
-        println!(
-            "  {} {} → {}",
-            style("·").dim(),
-            style(&skill.name).bold().dim(),
-            style(format!("{agent_name} already installed")).dim()
-        );
-    }
-
-    if new_targets.is_empty() {
-        return Ok(());
-    }
-
-    let source_path = registry.resolve_source_path(skill)?;
-    paths
-        .ensure_arc_home()
-        .map_err(|err| ArcError::new(err.to_string()))?;
-    let installed = engine.install_named(
-        &skill.name,
-        &ResourceKind::Skill,
-        &source_path,
-        &new_targets,
-    )?;
-    for agent in &installed {
-        record_global_skill_install(paths, agent, &skill.name, &source_path)?;
-        let agent_name = agent_display_name(agent);
-        println!(
-            "  {} {} → {}",
-            style("✓").green(),
-            style(&skill.name).bold(),
-            agent_name
-        );
-    }
-    Ok(())
+    render_install_report(
+        &registry.install_global(skill, targets),
+        &OutputFormat::Text,
+    )
 }
 
 fn install_one_json(
-    paths: &ArcPaths,
     registry: &SkillRegistry,
-    engine: &InstallEngine,
     skill: &SkillEntry,
     targets: &[String],
 ) -> Result<(), ArcError> {
-    let mut items = Vec::new();
-
-    for t in targets {
-        if engine.is_installed_for(&skill.name, &ResourceKind::Skill, t) {
-            items.push(WriteResultItem {
-                resource_kind: None,
-                name: skill.name.clone(),
-                agent: t.clone(),
-                status: "already_installed".to_string(),
-                reason: None,
-            });
-        }
-    }
-
-    let new_targets: Vec<String> = targets
-        .iter()
-        .filter(|t| !engine.is_installed_for(&skill.name, &ResourceKind::Skill, t))
-        .cloned()
-        .collect();
-
-    if !new_targets.is_empty() {
-        let source_path = registry.resolve_source_path(skill)?;
-        paths
-            .ensure_arc_home()
-            .map_err(|err| ArcError::new(err.to_string()))?;
-        match engine.install_named(
-            &skill.name,
-            &ResourceKind::Skill,
-            &source_path,
-            &new_targets,
-        ) {
-            Ok(installed) => {
-                for agent in &installed {
-                    record_global_skill_install(paths, agent, &skill.name, &source_path)?;
-                    items.push(WriteResultItem {
-                        resource_kind: None,
-                        name: skill.name.clone(),
-                        agent: agent.clone(),
-                        status: "installed".to_string(),
-                        reason: None,
-                    });
-                }
-            }
-            Err(e) => {
-                items.push(WriteResultItem {
-                    resource_kind: None,
-                    name: skill.name.clone(),
-                    agent: "".to_string(),
-                    status: format!("error: {}", e.message),
-                    reason: None,
-                });
-            }
-        }
-    }
-
-    let ok = !items.iter().any(|i| i.status.starts_with("error"));
-    print_json(&WriteResult {
-        schema_version: SCHEMA_VERSION,
-        ok,
-        message: if ok {
-            format!("Skill '{}' installed.", skill.name)
-        } else {
-            format!("Failed to install skill '{}'.", skill.name)
-        },
-        items,
-    })?;
-    Ok(())
+    render_install_report(
+        &registry.install_global(skill, targets),
+        &OutputFormat::Json,
+    )
 }
 
 // ── uninstall ────────────────────────────────────────────
@@ -303,8 +200,6 @@ fn uninstall(
     args: SkillUninstallArgs,
     fmt: &OutputFormat,
 ) -> Result<(), ArcError> {
-    let engine = InstallEngine::new(cache.clone());
-
     let Some(name) = args.name else {
         if !matches!(command_mode(fmt), CommandMode::Interactive) {
             require_name_arg(
@@ -329,68 +224,21 @@ fn uninstall(
         else {
             return Ok(());
         };
-        let result = engine.uninstall(&name, &ResourceKind::Skill, Some(&targets))?;
-        clear_global_skill_tracking(paths, &name, &result.attempted_agents)?;
-        if result.removed_any() {
-            println!("  {} {} removed.", style("✓").green(), name);
-        } else {
-            println!("  {} {} not installed.", style("─").dim(), name);
-        }
-        return Ok(());
+        return render_install_report(
+            &uninstall_global_skill(paths, cache, &name, Some(&targets)),
+            fmt,
+        );
     };
 
-    let targets = if args.all {
+    let targets = if args.all || args.agent.is_empty() {
         None
-    } else if args.agent.is_empty() {
-        Some(engine.get_installed_targets(&name, &ResourceKind::Skill))
     } else {
         Some(args.agent)
     };
-    let result = engine.uninstall(&name, &ResourceKind::Skill, targets.as_deref())?;
-    clear_global_skill_tracking(paths, &name, &result.attempted_agents)?;
-
-    if *fmt == OutputFormat::Json {
-        print_json(&WriteResult {
-            schema_version: SCHEMA_VERSION,
-            ok: true,
-            message: if result.removed_any() {
-                format!("Skill '{name}' removed.")
-            } else {
-                format!("Skill '{name}' not installed.")
-            },
-            items: Vec::new(),
-        })?;
-        return Ok(());
-    }
-
-    if result.removed_any() {
-        println!("  {} {} removed.", style("✓").green(), name);
-    } else {
-        println!("  {} {} not installed.", style("─").dim(), name);
-    }
-    Ok(())
-}
-
-fn record_global_skill_install(
-    paths: &ArcPaths,
-    agent: &str,
-    skill: &str,
-    source_path: &std::path::Path,
-) -> Result<(), ArcError> {
-    track_global_skill_install(paths, agent, skill, source_path)
-        .map_err(|err| ArcError::new(err.message))
-}
-
-fn clear_global_skill_tracking(
-    paths: &ArcPaths,
-    skill: &str,
-    targets: &[String],
-) -> Result<(), ArcError> {
-    for agent in targets {
-        untrack_global_skill_install(paths, agent, skill)
-            .map_err(|err| ArcError::new(err.message))?;
-    }
-    Ok(())
+    render_install_report(
+        &uninstall_global_skill(paths, cache, &name, targets.as_deref()),
+        fmt,
+    )
 }
 
 // ── info ─────────────────────────────────────────────────
@@ -420,11 +268,13 @@ fn info(
             .unwrap_or_else(|_| skill.source_path.clone());
         print_json(&SkillInfoOutput {
             schema_version: SCHEMA_VERSION,
+            scope: "global",
             name: skill.name.clone(),
             origin: skill.origin_display(),
             summary: skill.summary.clone(),
             installed_targets: skill.installed_targets.clone(),
             source_path: resolved.display().to_string(),
+            installations: registry.tracked_global_installs(Some(&skill.name))?,
         })?;
         return Ok(());
     }
@@ -521,47 +371,5 @@ fn print_bootstrap_report(report: &MarketSyncReport) {
             report.source_count,
             report.resource_count
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use arc_core::paths::ArcPaths;
-    use serde_json::Value;
-
-    use super::clear_global_skill_tracking;
-    use crate::commands::skill::record_global_skill_install;
-
-    #[test]
-    fn clear_global_skill_tracking_only_removes_selected_agents() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = ArcPaths::with_user_home(temp.path());
-        let source = temp.path().join("source").join("shared-skill");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(source.join("SKILL.md"), "# shared\n").unwrap();
-
-        record_global_skill_install(&paths, "claude", "shared-skill", &source).unwrap();
-        record_global_skill_install(&paths, "undetected-agent", "shared-skill", &source).unwrap();
-
-        clear_global_skill_tracking(&paths, "shared-skill", &["claude".to_string()]).unwrap();
-
-        let body = fs::read_to_string(paths.skill_tracking_file()).unwrap();
-        let records: Value = serde_json::from_str(&body).unwrap();
-        let agents = records
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|record| {
-                record
-                    .get("agent")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .to_string()
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(agents, vec!["undetected-agent".to_string()]);
     }
 }

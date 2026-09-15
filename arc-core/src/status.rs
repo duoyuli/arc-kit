@@ -8,7 +8,7 @@ mod agents;
 mod catalog;
 mod project_status;
 
-use crate::agent::{agent_spec, project_skill_path};
+use crate::agent::agent_spec;
 use crate::detect::DetectCache;
 use crate::engine::{InstallEngine, InstalledResource};
 use crate::market::sources::MarketSourceRegistry;
@@ -16,7 +16,6 @@ use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
 use crate::project::{find_project_config, load_project_config};
 use crate::provider::{load_providers_for_agent, read_active_provider, supports_provider_agent};
-use crate::skill::SkillRegistry;
 
 use actions::collect_actions;
 use agents::{collect_agents, count_skills_by_agent};
@@ -29,6 +28,7 @@ pub struct StatusSnapshot {
     pub agents: Vec<AgentRuntimeStatus>,
     pub catalog: CatalogStatus,
     pub actions: Vec<RecommendedAction>,
+    pub tracking: crate::skill::install::InstallTrackingStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +57,8 @@ pub struct ProjectStatusSection {
     pub agents: Vec<ProjectTargetStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProjectProviderStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installations: Option<crate::skill::install::InstallReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +69,7 @@ pub struct ProjectSummary {
     pub missing_skills: usize,
     pub unavailable_skills: usize,
     pub target_agents: usize,
+    pub attention_skills: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +79,9 @@ pub enum ProjectSkillState {
     Partial,
     Missing,
     Unavailable,
+    Unmanaged,
+    Conflict,
+    Outdated,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,12 +176,14 @@ pub fn collect_status(paths: &ArcPaths, cwd: &Path, cache: &DetectCache) -> Stat
     let catalog = collect_catalog(paths, installed.len());
     let project = collect_project(paths, cwd, cache, &agents);
     let actions = collect_actions(&project, &agents);
+    let tracking = crate::skill::install::inspect_install_tracking(paths);
 
     StatusSnapshot {
         project,
         agents,
         catalog,
         actions,
+        tracking,
     }
 }
 
@@ -262,6 +270,22 @@ mod tests {
             ("codex".to_string(), fake_agent("codex")),
             ("claude".to_string(), fake_agent("claude")),
         ]));
+
+        let installed = crate::project::skills::reconcile_project_skills(
+            &paths,
+            &cache,
+            cwd.path(),
+            &["my-skill".to_string()],
+            &crate::project::skills::ProjectSkillOptions {
+                all_agents: true,
+                adopt_existing: true,
+                ..Default::default()
+            },
+            false,
+            &[],
+        );
+        assert!(installed.ok(), "{installed:?}");
+        fs::remove_file(cwd.path().join(".claude/skills/my-skill")).unwrap();
 
         let snapshot = collect_status(&paths, cwd.path(), &cache);
 

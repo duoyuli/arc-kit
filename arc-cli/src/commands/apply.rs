@@ -1,22 +1,36 @@
 use std::env;
-use std::io::{self, IsTerminal};
 
+use arc_core::agent::agent_spec;
 use arc_core::detect::DetectCache;
 use arc_core::error::ArcError;
-use arc_core::models::ResourceKind;
-use arc_core::paths::ArcPaths;
-use arc_core::project::{
-    ConfigSource, EffectiveConfig, ProjectApplyExecution, ProjectMarketEventStatus,
-    ProjectSkillApplyStatus, execute_project_apply, find_project_config, prepare_project_apply,
+use arc_core::paths::{ArcPaths, expand_user_path};
+use arc_core::project::skills::{
+    ProjectSkillOptions, reconcile_project_skills, recorded_project_agents,
 };
-use arc_core::provider::seed_default_providers;
+use arc_core::project::{
+    ProjectMarketEvent, ProjectProviderSwitch, execute_project_apply_with_options,
+    find_project_config, prepare_project_apply_with_mode,
+};
+use arc_core::skill::install::{InstallReport, InstallScope};
 use arc_tui::select_agents;
-use console::style;
+use serde::Serialize;
 
-use crate::cli::{OutputFormat, ProjectApplyArgs};
-use crate::commands::arc_toml_wizard;
-use crate::display::agent_display_name;
-use crate::format::{SCHEMA_VERSION, WriteResult, WriteResultItem, print_json};
+use crate::cli::{OutputFormat, ProjectApplyArgs, ProjectCleanArgs};
+use crate::commands::common::{is_interactive, render_install_report, render_install_report_text};
+use crate::format::{SCHEMA_VERSION, print_json};
+
+#[derive(Serialize)]
+struct ProjectOutput<'a> {
+    schema_version: &'static str,
+    ok: bool,
+    message: &'static str,
+    has_changes: bool,
+    #[serde(flatten)]
+    installs: &'a InstallReport,
+    market_events: &'a [ProjectMarketEvent],
+    provider_switch: Option<&'a ProjectProviderSwitch>,
+    planned_provider: Option<&'a str>,
+}
 
 pub fn run(
     paths: &ArcPaths,
@@ -24,382 +38,160 @@ pub fn run(
     fmt: &OutputFormat,
     args: &ProjectApplyArgs,
 ) -> Result<(), ArcError> {
-    let cwd = env::current_dir()
-        .map_err(|e| ArcError::new(format!("failed to get working directory: {e}")))?;
-    seed_default_providers(paths, cache);
-
-    if find_project_config(&cwd).is_none() {
-        if *fmt == OutputFormat::Json {
-            print_json(&WriteResult {
-                schema_version: SCHEMA_VERSION,
-                ok: false,
-                message: "No arc.toml found. Run `arc project apply` from a terminal to create one interactively, or add arc.toml manually.".to_string(),
-                items: Vec::new(),
-            })?;
-            return Ok(());
-        }
-
-        let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-        if !is_tty {
-            return Err(ArcError::with_hint(
-                "No arc.toml found in current directory.".to_string(),
-                "Run `arc project apply` from a terminal to create arc.toml, or add the file manually.".to_string(),
-            ));
-        }
-
-        println!();
-        println!(
-            "  {}",
-            style("No arc.toml found in current directory.").yellow()
-        );
-        println!();
-        println!("  {}", style("Creating arc.toml…").dim());
-        println!();
-        if !arc_toml_wizard::create_arc_toml_interactive(paths, cache, &cwd)? {
-            return Ok(());
-        }
-    }
-
-    let plan = prepare_project_apply(paths, cache, &cwd)?;
-
-    if *fmt == OutputFormat::Json {
-        return apply_json(paths, cache, &plan, args);
-    }
-
-    println!();
-    println!("{}", style(&plan.effective.project_name).bold());
-
-    let printed_requirements =
-        print_project_requirements_status(&plan.effective, plan.provider_to_switch.as_deref());
-    if !printed_requirements {
-        println!();
-    }
-
-    render_market_events(&plan);
-    println!();
-
-    let targets = if plan.effective.missing_installable.is_empty() {
-        Vec::new()
-    } else {
-        resolve_project_install_targets(cache, args, fmt)?
+    let cwd = env::current_dir().map_err(|err| ArcError::new(err.to_string()))?;
+    let plan = match prepare_project_apply_with_mode(paths, cache, &cwd, args.dry_run) {
+        Ok(plan) => plan,
+        Err(err) => return fail(fmt, args.dry_run, err),
     };
-    let execution = execute_project_apply(paths, cache, &plan, &targets)?;
-
-    render_provider_execution(&execution);
-    render_skill_results(&execution);
-
-    for name in &plan.effective.missing_unavailable {
-        println!(
-            "  {} {} not found in any source, skipped.",
-            style("!").yellow(),
-            style(name).bold()
-        );
-        println!(
-            "    {}",
-            style("Run `arc market add <url>` to add a market source containing this skill.").dim()
-        );
-    }
-    println!();
-
-    if !execution.has_issues(&plan.effective) {
-        println!("  {}", style("Ready.").green());
-    } else {
-        println!("  {}", style("Partially ready").yellow(),);
-    }
-    println!();
-
-    Ok(())
-}
-
-fn print_project_requirements_status(
-    effective: &EffectiveConfig,
-    provider_to_switch: Option<&str>,
-) -> bool {
-    let mut printed_sections = 0usize;
-
-    if print_required_provider_status(effective, provider_to_switch) {
-        printed_sections += 1;
-    }
-    if print_required_skills_status(effective) {
-        printed_sections += 1;
-    }
-
-    if printed_sections > 0 {
-        println!();
-    }
-    printed_sections > 0
-}
-
-fn print_required_provider_status(
-    effective: &EffectiveConfig,
-    provider_to_switch: Option<&str>,
-) -> bool {
-    let Some(provider) = &effective.provider else {
-        return false;
+    let mut options = ProjectSkillOptions {
+        agents: args.agent.clone(),
+        all_agents: args.all_agents,
+        dry_run: args.dry_run,
+        adopt_existing: args.adopt_existing,
     };
-    if provider.source != ConfigSource::Project {
-        return false;
-    }
-
-    println!();
-    println!(
-        "  {} {}",
-        style("provider").bold(),
-        style("(required in arc.toml)").dim()
-    );
-    let status_line = if provider_to_switch.is_some() {
-        format!("{}", style("will switch").cyan())
-    } else {
-        format!("{}", style("present").green())
-    };
-    println!("    {}  {}", style(&provider.value).bold(), status_line);
-    true
-}
-
-/// Lists each `[skills] require` entry and whether it is present, installable, or unknown.
-fn print_required_skills_status(effective: &EffectiveConfig) -> bool {
-    if effective.required_skills.is_empty() {
-        return false;
-    }
-
-    println!();
-    println!(
-        "  {} {}",
-        style("skills").bold(),
-        style("(required in arc.toml)").dim()
-    );
-    for name in &effective.required_skills {
-        let status_line = if effective.installed_skills.contains(name) {
-            format!("{}", style("present (project)").green())
-        } else if effective.missing_installable.contains(name) {
-            format!("{}", style("will install").cyan())
-        } else {
-            format!("{}", style("not in catalog").yellow())
-        };
-        println!("    {}  {}", style(name).bold(), status_line);
-    }
-    true
-}
-
-fn resolve_project_install_targets(
-    cache: &DetectCache,
-    args: &ProjectApplyArgs,
-    fmt: &OutputFormat,
-) -> Result<Vec<String>, ArcError> {
-    let candidates = cache.agents_for_project_skill_install(&ResourceKind::Skill);
-    if candidates.is_empty() {
-        return Err(ArcError::with_hint(
-            "No coding agents with project-local skill support are detected.".to_string(),
-            "Install a supported agent (e.g. Claude Code, Codex) or check PATH.".to_string(),
-        ));
-    }
-
-    if args.all_agents && !args.agent.is_empty() {
-        return Err(ArcError::with_hint(
-            "Use either --all-agents or --agent <name>, not both.".to_string(),
-            "Example: arc project apply --all-agents".to_string(),
-        ));
-    }
-
-    if args.all_agents {
-        return Ok(candidates);
-    }
-
-    if !args.agent.is_empty() {
-        let mut out = Vec::new();
-        for id in &args.agent {
-            if !candidates.iter().any(|c| c == id) {
-                return Err(ArcError::with_hint(
-                    format!(
-                        "Agent '{id}' is not available for project skill install (not detected or no project-local support)."
+    if options.agents.is_empty()
+        && !options.all_agents
+        && !plan.effective.required_skills.is_empty()
+    {
+        let recorded =
+            match recorded_project_agents(paths, plan.effective.project_root.as_deref().unwrap()) {
+                Ok(recorded) => recorded,
+                Err(err) => return fail(fmt, args.dry_run, err),
+            };
+        if recorded.is_empty() {
+            if !is_interactive(fmt) || args.dry_run {
+                return fail(
+                    fmt,
+                    args.dry_run,
+                    ArcError::new(
+                        "Choose target agent(s): pass --agent <name> (repeatable) or --all-agents.",
                     ),
-                    format!("Available: {}", candidates.join(", ")),
-                ));
+                );
             }
-            if !out.contains(id) {
-                out.push(id.clone());
+            let candidates: Vec<String> = cache
+                .agents_for_project_skill_install(&arc_core::models::ResourceKind::Skill)
+                .into_iter()
+                .filter(|agent| {
+                    cache.get_agent(agent).is_some()
+                        && agent_spec(agent).is_some_and(|spec| spec.supports_project_skills)
+                })
+                .collect();
+            options.agents = select_agents(&candidates, &[])
+                .map_err(|err| ArcError::new(format!("agent selection failed: {err}")))?;
+            if options.agents.is_empty() {
+                return Err(ArcError::new("No agents selected; canceled."));
             }
         }
-        return Ok(out);
     }
-
+    let execution = match execute_project_apply_with_options(paths, cache, &plan, &options) {
+        Ok(execution) => execution,
+        Err(err) => return fail(fmt, args.dry_run, err),
+    };
+    let ok = execution.installs.ok();
     if *fmt == OutputFormat::Json {
-        return Err(ArcError::with_hint(
-            "Specify --agent <name> (repeatable) or --all-agents for project skill install."
-                .to_string(),
-            "Example: arc project apply --format json --agent claude".to_string(),
-        ));
+        print_json(&ProjectOutput {
+            schema_version: SCHEMA_VERSION,
+            ok,
+            message: if ok {
+                if args.dry_run { "Plan ready." } else { "Done." }
+            } else {
+                "Completed with issues."
+            },
+            has_changes: execution.installs.has_changes()
+                || !plan.market_events.is_empty()
+                || plan.provider_to_switch.is_some(),
+            installs: &execution.installs,
+            market_events: &plan.market_events,
+            provider_switch: execution.provider_switch.as_ref(),
+            planned_provider: if args.dry_run {
+                plan.provider_to_switch.as_deref()
+            } else {
+                None
+            },
+        })?;
+    } else {
+        println!(
+            "Project: {}",
+            plan.effective.project_root.as_ref().unwrap().display()
+        );
+        for market in &plan.market_events {
+            println!("  market {:?}: {}", market.status, market.url);
+        }
+        if let Some(provider) = &execution.provider_switch {
+            println!("  provider switched: {}", provider.name);
+        }
+        if args.dry_run
+            && let Some(provider) = &plan.provider_to_switch
+        {
+            println!("  provider planned: {provider}");
+        }
+        render_install_report_text(&execution.installs);
+        println!(
+            "{}",
+            if ok {
+                if args.dry_run {
+                    "Plan ready."
+                } else {
+                    "Ready."
+                }
+            } else {
+                "Completed with issues."
+            }
+        );
     }
-
-    let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
-    if !is_tty {
-        return Err(ArcError::with_hint(
-            "Choose target agent(s): pass --agent <name> (repeatable) or --all-agents, or run from a TTY for interactive selection.".to_string(),
-            "Example: arc project apply --agent claude".to_string(),
-        ));
+    if ok {
+        Ok(())
+    } else {
+        Err(ArcError::new("Project apply completed with issues."))
     }
-
-    let installed: Vec<&String> = Vec::new();
-    let selected = select_agents(&candidates, &installed)
-        .map_err(|e| ArcError::new(format!("agent selection failed: {e}")))?;
-    if selected.is_empty() {
-        return Err(ArcError::new("No agents selected; canceled."));
-    }
-    Ok(selected)
 }
 
-fn apply_json(
+pub fn clean(
     paths: &ArcPaths,
     cache: &DetectCache,
-    plan: &arc_core::project::ProjectApplyPlan,
-    args: &ProjectApplyArgs,
+    fmt: &OutputFormat,
+    args: &ProjectCleanArgs,
 ) -> Result<(), ArcError> {
-    let targets = if plan.effective.missing_installable.is_empty() {
-        Vec::new()
+    let cwd = env::current_dir().map_err(|err| ArcError::new(err.to_string()))?;
+    let root = if let Some(root) = &args.project_root {
+        expand_user_path(root)
     } else {
-        resolve_project_install_targets(cache, args, &OutputFormat::Json)?
+        match find_project_config(&cwd)
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        {
+            Some(root) => root,
+            None => {
+                return fail(
+                    fmt,
+                    args.dry_run,
+                    ArcError::new(
+                        "No arc.toml found; pass --project-root <path> to clean a recorded project.",
+                    ),
+                );
+            }
+        }
     };
-    let execution = execute_project_apply(paths, cache, plan, &targets)?;
-    let items = execution_to_write_items(&execution, &plan.effective);
-    let ok = !execution.has_issues(&plan.effective) && !items.iter().any(item_has_issue);
-
-    print_json(&WriteResult {
-        schema_version: SCHEMA_VERSION,
-        ok,
-        message: if ok {
-            "Done.".to_string()
-        } else {
-            "Completed with issues.".to_string()
-        },
-        items,
-    })?;
-
-    Ok(())
-}
-
-fn render_market_events(plan: &arc_core::project::ProjectApplyPlan) {
-    for event in &plan.market_events {
-        match event.status {
-            ProjectMarketEventStatus::Added => {
-                println!(
-                    "  {} market {} -> {}",
-                    style("+").green(),
-                    style(&event.source_id).bold(),
-                    style(&event.url).dim()
-                );
-            }
-            ProjectMarketEventStatus::Failed => {
-                println!(
-                    "  {} market {} - failed to add",
-                    style("!").yellow(),
-                    style(&event.source_id).bold()
-                );
-            }
-        }
-    }
-}
-
-fn render_provider_execution(execution: &ProjectApplyExecution) {
-    let Some(provider_switch) = &execution.provider_switch else {
-        return;
+    let options = ProjectSkillOptions {
+        agents: args.agent.clone(),
+        all_agents: args.all_agents,
+        dry_run: args.dry_run,
+        adopt_existing: false,
     };
-    println!("  provider  -> {}", style(&provider_switch.name).cyan());
-    for agent in &provider_switch.agents {
-        println!(
-            "  {} provider {} -> {}",
-            style("+").green(),
-            style(&provider_switch.name).bold(),
-            agent_display_name(agent)
-        );
-    }
+    let report = reconcile_project_skills(paths, cache, &root, &[], &options, true, &[]);
+    render_install_report(&report, fmt)
 }
 
-fn render_skill_results(execution: &ProjectApplyExecution) {
-    for item in &execution.skill_results {
-        match &item.status {
-            ProjectSkillApplyStatus::Installed { agents } => {
-                for agent in agents {
-                    println!(
-                        "  {} {} -> {} (project)",
-                        style("+").green(),
-                        style(&item.name).bold(),
-                        agent_display_name(agent)
-                    );
-                }
-            }
-            ProjectSkillApplyStatus::NotFound => {
-                println!(
-                    "  {} {} - not found",
-                    style("x").red(),
-                    style(&item.name).bold()
-                );
-            }
-            ProjectSkillApplyStatus::Failed { message } => {
-                println!(
-                    "  {} {} - {}",
-                    style("x").red(),
-                    style(&item.name).bold(),
-                    style(message).dim()
-                );
-            }
-        }
+fn fail(fmt: &OutputFormat, dry_run: bool, error: ArcError) -> Result<(), ArcError> {
+    let mut report = InstallReport::new(InstallScope::Project, None, dry_run);
+    report.errors.push(error.message.clone());
+    if *fmt == OutputFormat::Json {
+        print_json(&crate::commands::common::InstallCommandOutput {
+            schema_version: SCHEMA_VERSION,
+            ok: false,
+            message: &error.message,
+            has_changes: false,
+            report: &report,
+        })?;
     }
-}
-
-fn execution_to_write_items(
-    execution: &ProjectApplyExecution,
-    _effective: &EffectiveConfig,
-) -> Vec<WriteResultItem> {
-    let mut items = Vec::new();
-
-    if let Some(provider_switch) = &execution.provider_switch {
-        items.push(WriteResultItem {
-            resource_kind: None,
-            name: provider_switch.name.clone(),
-            agent: if provider_switch.agents.is_empty() {
-                "all".to_string()
-            } else {
-                provider_switch.agents.join(",")
-            },
-            status: "provider_switched".to_string(),
-            reason: None,
-        });
-    }
-
-    for item in &execution.skill_results {
-        match &item.status {
-            ProjectSkillApplyStatus::Installed { agents } => {
-                for agent in agents {
-                    items.push(WriteResultItem {
-                        resource_kind: None,
-                        name: item.name.clone(),
-                        agent: agent.clone(),
-                        status: "installed".to_string(),
-                        reason: None,
-                    });
-                }
-            }
-            ProjectSkillApplyStatus::NotFound => items.push(WriteResultItem {
-                resource_kind: None,
-                name: item.name.clone(),
-                agent: String::new(),
-                status: "not_found".to_string(),
-                reason: None,
-            }),
-            ProjectSkillApplyStatus::Failed { message } => items.push(WriteResultItem {
-                resource_kind: None,
-                name: item.name.clone(),
-                agent: String::new(),
-                status: format!("error: {message}"),
-                reason: None,
-            }),
-        }
-    }
-
-    items
-}
-
-fn item_has_issue(item: &WriteResultItem) -> bool {
-    matches!(item.status.as_str(), "failed" | "skipped" | "not_found")
-        || item.status.starts_with("error")
+    Err(error)
 }

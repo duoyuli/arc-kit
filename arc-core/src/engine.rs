@@ -1,25 +1,27 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use log::info;
-
-use crate::adapters::base::{AgentContext, Snapshot};
-use crate::adapters::registry::all_resource_adapters;
-use crate::agent::{SkillInstallStrategy, agent_spec, project_skill_path, resource_install_subdir};
+use crate::agent::resource_install_subdir;
 use crate::detect::DetectCache;
 use crate::error::{ArcError, Result};
 use crate::models::{ResourceInfo, ResourceKind};
+use crate::paths::ArcPaths;
+use crate::skill::install::{
+    InstallItem, InstallReport, InstallStatus, install_global_skill, install_project_skill,
+    uninstall_global_skill,
+};
 
 #[derive(Debug, Clone)]
 pub struct InstallEngine {
     cache: DetectCache,
+    paths: Option<ArcPaths>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UninstallResult {
     pub attempted_agents: Vec<String>,
     pub removed_agents: Vec<String>,
+    pub items: Vec<InstallItem>,
 }
 
 impl UninstallResult {
@@ -30,7 +32,21 @@ impl UninstallResult {
 
 impl InstallEngine {
     pub fn new(cache: DetectCache) -> Self {
-        Self { cache }
+        Self { cache, paths: None }
+    }
+
+    /// Construct an engine whose writes commit installation metadata.
+    pub fn with_paths(paths: ArcPaths, cache: DetectCache) -> Self {
+        Self {
+            cache,
+            paths: Some(paths),
+        }
+    }
+
+    fn write_paths(&self) -> Result<&ArcPaths> {
+        self.paths
+            .as_ref()
+            .ok_or_else(|| ArcError::new("installation writes require InstallEngine::with_paths"))
     }
 
     /// Returns true if this agent was detected (has a home root) in the current cache.
@@ -53,126 +69,51 @@ impl InstallEngine {
         &self,
         name: &str,
         kind: &ResourceKind,
-        source_path: &Path,
+        source: &Path,
         targets: &[String],
     ) -> Result<Vec<String>> {
-        let adapters = all_resource_adapters();
-        let mut installed = Vec::new();
-        for target in targets {
-            let agent_info = self.cache.get_agent(target).ok_or_else(|| {
-                ArcError::with_hint(
-                    format!("Agent '{target}' not detected"),
-                    format!("Install {target} first or choose a different agent"),
-                )
-            })?;
-            let ctx =
-                agent_context(target, agent_info.root.clone()).expect("detected agent has root");
-            let snapshot = Snapshot {
-                name: name.to_string(),
-                kind: kind.clone(),
-                path: source_path.to_path_buf(),
-                metadata: BTreeMap::new(),
-            };
-            let mut matched = false;
-            for adapter in &adapters {
-                if adapter.supports(&snapshot, &ctx) {
-                    let result = adapter.apply(&snapshot, &ctx);
-                    if !result.ok {
-                        return Err(ArcError::new(result.message));
-                    }
-                    info!("installed {} → {} ({})", name, target, kind);
-                    installed.push(target.clone());
-                    matched = true;
-                    break;
-                }
-            }
-            if !matched {
-                return Err(ArcError::new(format!(
-                    "No adapter found for '{}' on agent '{}'",
-                    kind, target
-                )));
-            }
-        }
-        Ok(installed)
+        let report = self.install_named_report(name, kind, source, targets)?;
+        completed_agents(report)
     }
 
-    /// Install a skill into **project-local** paths (e.g. `<repo>/.claude/skills/<name>`) for each
-    /// detected target agent. Does not write to `~/.claude` etc.; use [`Self::install_named`] for
-    /// global (user-home) installs.
+    pub fn install_named_report(
+        &self,
+        name: &str,
+        kind: &ResourceKind,
+        source: &Path,
+        targets: &[String],
+    ) -> Result<InstallReport> {
+        if *kind != ResourceKind::Skill {
+            return Err(ArcError::new("only skill installations are supported"));
+        }
+        Ok(install_global_skill(
+            self.write_paths()?,
+            &self.cache,
+            name,
+            source,
+            targets,
+        ))
+    }
+
     pub fn install_named_project(
         &self,
         name: &str,
         kind: &ResourceKind,
-        source_path: &Path,
-        project_root: &Path,
+        source: &Path,
+        root: &Path,
         targets: &[String],
     ) -> Result<Vec<String>> {
-        if !matches!(kind, ResourceKind::Skill) {
-            return Err(ArcError::new(
-                "project install only supports skills (ResourceKind::Skill)",
-            ));
+        if *kind != ResourceKind::Skill {
+            return Err(ArcError::new("project install only supports skills"));
         }
-        let mut installed = Vec::new();
-        for target in targets {
-            self.cache.get_agent(target).ok_or_else(|| {
-                ArcError::with_hint(
-                    format!("Agent '{target}' not detected"),
-                    format!("Install {target} first or choose a different agent"),
-                )
-            })?;
-            let spec = agent_spec(target.as_str()).ok_or_else(|| {
-                ArcError::new(format!("unknown agent id '{target}' for project install"))
-            })?;
-            let dest = project_skill_path(project_root, target, name).ok_or_else(|| {
-                ArcError::new(format!("no project skill path for agent '{target}'"))
-            })?;
-            let Some(parent) = dest.parent() else {
-                return Err(ArcError::new("invalid project skill destination"));
-            };
-            if let Err(err) = fs::create_dir_all(parent) {
-                return Err(ArcError::new(format!(
-                    "failed to create project skills dir: {err}"
-                )));
-            }
-            if (dest.exists() || dest.symlink_metadata().is_ok())
-                && fs::remove_file(&dest).is_err()
-                && fs::remove_dir_all(&dest).is_err()
-            {
-                return Err(ArcError::new(format!(
-                    "failed to replace existing project skill at {}",
-                    dest.display()
-                )));
-            }
-            match spec.skill_install_strategy {
-                SkillInstallStrategy::Symlink => {
-                    #[cfg(unix)]
-                    {
-                        if let Err(err) = std::os::unix::fs::symlink(source_path, &dest) {
-                            return Err(ArcError::new(format!("failed to create symlink: {err}")));
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        return Err(ArcError::new(
-                            "symlink project install is unsupported on this platform",
-                        ));
-                    }
-                }
-                SkillInstallStrategy::Copy => {
-                    if let Err(err) = copy_dir_recursive(source_path, &dest) {
-                        return Err(ArcError::new(format!("failed to copy skill: {err}")));
-                    }
-                }
-            }
-            info!(
-                "installed {} → project {} ({})",
-                name,
-                dest.display(),
-                target
-            );
-            installed.push(target.clone());
-        }
-        Ok(installed)
+        completed_agents(install_project_skill(
+            self.write_paths()?,
+            &self.cache,
+            root,
+            name,
+            source,
+            targets,
+        ))
     }
 
     pub fn uninstall(
@@ -181,39 +122,34 @@ impl InstallEngine {
         kind: &ResourceKind,
         targets: Option<&[String]>,
     ) -> Result<UninstallResult> {
-        let adapters = all_resource_adapters();
-        let agents = self.cache.detected_agents();
-        let selected_targets: Vec<String> = targets
-            .map(|items| items.to_vec())
-            .unwrap_or_else(|| agents.keys().cloned().collect());
-        let mut result = UninstallResult::default();
-        for target in selected_targets {
-            let Some(agent_info) = agents.get(&target) else {
-                continue;
-            };
-            let Some(root) = &agent_info.root else {
-                continue;
-            };
-            let ctx = agent_context(&target, Some(root.clone())).expect("checked root");
-            let snapshot = Snapshot {
-                name: name.to_string(),
-                kind: kind.clone(),
-                path: PathBuf::new(),
-                metadata: BTreeMap::new(),
-            };
-            for adapter in &adapters {
-                if adapter.supports(&snapshot, &ctx) {
-                    result.attempted_agents.push(target.clone());
-                    let adapter_result = adapter.uninstall(&snapshot, &ctx);
-                    if adapter_result.ok && !adapter_result.applied.is_empty() {
-                        info!("uninstalled {} from {}", name, target);
-                        result.removed_agents.push(target.clone());
-                    }
-                    break;
-                }
-            }
+        if *kind != ResourceKind::Skill {
+            return Err(ArcError::new("only skill uninstallations are supported"));
         }
-        Ok(result)
+        let report = uninstall_global_skill(self.write_paths()?, &self.cache, name, targets);
+        if !report.ok() {
+            return Err(report_error(&report));
+        }
+        let mut attempted: std::collections::BTreeSet<String> = targets
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|agent| self.cache.get_agent(agent).is_some())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_else(|| self.cache.detected_agents().keys().cloned().collect());
+        attempted.extend(report.items.iter().map(|item| item.agent.clone()));
+        let removed = report
+            .items
+            .iter()
+            .filter(|item| item.status == InstallStatus::Removed)
+            .map(|item| item.agent.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        Ok(UninstallResult {
+            attempted_agents: attempted.into_iter().collect(),
+            removed_agents: removed.into_iter().collect(),
+            items: report.items,
+        })
     }
 
     pub fn is_installed_for(&self, name: &str, kind: &ResourceKind, target: &str) -> bool {
@@ -269,6 +205,9 @@ impl InstallEngine {
                 };
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(".arc-install-") {
+                        continue;
+                    }
                     let key = format!("{}/{}", current_kind.as_str(), name);
                     let installed = seen.entry(key).or_insert_with(|| InstalledResource {
                         name: name.clone(),
@@ -302,25 +241,29 @@ pub struct InstalledResource {
     pub targets: Vec<String>,
 }
 
-fn agent_context(name: &str, root: Option<PathBuf>) -> Option<AgentContext> {
-    Some(AgentContext {
-        name: name.to_string(),
-        detected: true,
-        root: root?,
-    })
+fn completed_agents(report: InstallReport) -> Result<Vec<String>> {
+    if !report.ok() {
+        return Err(report_error(&report));
+    }
+    Ok(report
+        .items
+        .into_iter()
+        .map(|item| item.agent)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect())
 }
 
-fn copy_dir_recursive(source: &Path, target: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(target)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let entry_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        if entry_path.is_dir() {
-            copy_dir_recursive(&entry_path, &target_path)?;
-        } else {
-            fs::copy(&entry_path, &target_path)?;
-        }
-    }
-    Ok(())
+fn report_error(report: &InstallReport) -> ArcError {
+    let messages: Vec<_> = report
+        .errors
+        .iter()
+        .cloned()
+        .chain(report.items.iter().filter_map(|item| item.message.clone()))
+        .collect();
+    ArcError::new(if messages.is_empty() {
+        "installation operation failed".to_string()
+    } else {
+        messages.join("; ")
+    })
 }

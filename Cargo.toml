@@ -8,8 +8,9 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.89"
 license = "MIT"
-version = "2026.9.14+1"
+version = "2026.9.15"
 
 [workspace.dependencies]
 anyhow = "1.0"

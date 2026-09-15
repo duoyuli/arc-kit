@@ -1,3 +1,7 @@
+# OS
+.DS_Store
+Thumbs.db
+
 # IDE
 .vscode/
 .idea/
@@ -5,27 +9,18 @@
 *.swo
 *~
 
-# OS
-.DS_Store
-Thumbs.db
+# build output
+target/
 
 # arc-cli local state (when developing / running locally)
 .arc-cli/
-
-# Root arc.toml when dogfooding arc against this repo (optional; do not commit local project config)
-/arc.toml
+**/arc.toml
 
 # coding agent
-.claude/
 .cursor/
-.sisyphus/
 .gemini/
-.kimi/
 .opencode/
 .agents/
+.sisyphus/
 .omx/
-.codex/
 .omo/
-
-# build output
-target/

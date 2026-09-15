@@ -70,20 +70,66 @@ pub enum Commands {
 
 #[derive(Args, Clone, Debug, Default)]
 pub struct ProjectApplyArgs {
-    /// Target agent(s) for project skill install; repeat for multiple. Omit (with no --all-agents) in TTY to pick interactively when skills need installing.
-    #[arg(short, long = "agent", value_name = "AGENT")]
+    /// 仅协调显式选择的项目 agent，可重复传入。
+    #[arg(
+        short,
+        long = "agent",
+        value_name = "AGENT",
+        conflicts_with = "all_agents",
+        help = "Reconcile only these project agents; repeat for multiple."
+    )]
     pub agent: Vec<String>,
-    /// Install to every detected agent that supports project-local skills (previous default)
-    #[arg(long)]
+    /// 合并当前探测到的项目 agent 与历史记录中的 agent。
+    #[arg(
+        long,
+        conflicts_with = "agent",
+        help = "Include detected project agents and previously tracked project agents."
+    )]
     pub all_agents: bool,
+    /// 只读取本地数据生成预演，不修改文件或缓存。
+    #[arg(
+        long,
+        help = "Preview from local data without changing files or caches."
+    )]
+    pub dry_run: bool,
+    /// 显式接管与声明来源匹配的已有目标。
+    #[arg(
+        long,
+        help = "Take ownership of matching existing required skill targets."
+    )]
+    pub adopt_existing: bool,
+}
+
+#[derive(Args, Clone, Debug, Default)]
+pub struct ProjectCleanArgs {
+    /// 显式指定仍存在的项目目录，允许声明文件已被移除。
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Explicit existing project directory; usable after arc.toml has been removed."
+    )]
+    pub project_root: Option<std::path::PathBuf>,
+    #[arg(
+        short,
+        long = "agent",
+        value_name = "AGENT",
+        conflicts_with = "all_agents"
+    )]
+    pub agent: Vec<String>,
+    #[arg(long, conflicts_with = "agent")]
+    pub all_agents: bool,
+    #[arg(long, help = "Preview cleanup without changing files or caches")]
+    pub dry_run: bool,
 }
 
 #[derive(Subcommand)]
 pub enum ProjectCommand {
     #[command(
-        about = "Create or update arc.toml from the catalog, switch provider, and install project skills"
+        about = "Reconcile tracked project skills with arc.toml and switch the required provider"
     )]
     Apply(ProjectApplyArgs),
+    #[command(about = "Remove tracked project skill installations while keeping arc.toml")]
+    Clean(ProjectCleanArgs),
     #[command(about = "Edit project skill requirements in arc.toml (interactive)")]
     Edit,
 }
@@ -108,13 +154,13 @@ pub enum MarketCommand {
 
 #[derive(Subcommand)]
 pub enum SkillCommand {
-    #[command(about = "List all skills")]
+    #[command(about = "List global skills")]
     List(SkillListArgs),
-    #[command(about = "Install a skill")]
+    #[command(about = "Install a global skill")]
     Install(SkillInstallArgs),
-    #[command(about = "Uninstall a skill")]
+    #[command(about = "Uninstall a global skill")]
     Uninstall(SkillUninstallArgs),
-    #[command(about = "Show skill details")]
+    #[command(about = "Show global skill details")]
     Info(SkillInfoArgs),
 }
 
@@ -144,7 +190,7 @@ pub struct SkillUninstallArgs {
     pub name: Option<String>,
     #[arg(short, long = "agent", help = "Target agent(s)")]
     pub agent: Vec<String>,
-    #[arg(long, action = ArgAction::SetTrue, help = "Uninstall from all agents")]
+    #[arg(long, action = ArgAction::SetTrue, help = "Uninstall global copies from all agents; project installs are excluded")]
     pub all: bool,
 }
 

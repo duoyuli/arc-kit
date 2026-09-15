@@ -44,10 +44,15 @@ pub fn run() -> Result<(), ArcError> {
 
     let fmt = cli.format;
     let paths = ArcPaths::default();
-    paths
-        .ensure_arc_home()
-        .map_err(|e| ArcError::new(format!("failed to initialize state directory: {e}")))?;
-    init_logger(&paths, cli.verbose);
+    let read_only = matches!(&cli.command, Some(Commands::Status))
+        || matches!(&cli.command, Some(Commands::Project { command: ProjectCommand::Apply(opts) }) if opts.dry_run)
+        || matches!(&cli.command, Some(Commands::Project { command: ProjectCommand::Clean(opts) }) if opts.dry_run);
+    if !read_only {
+        paths
+            .ensure_arc_home()
+            .map_err(|e| ArcError::new(format!("failed to initialize state directory: {e}")))?;
+        init_logger(&paths, cli.verbose);
+    }
 
     if std::io::stderr().is_terminal() && !paths.completions_dir().exists() {
         eprintln!(
@@ -84,6 +89,10 @@ pub fn run() -> Result<(), ArcError> {
             ProjectCommand::Edit => {
                 let cache = DetectCache::new(&paths);
                 edit::run(&paths, &cache, &fmt)
+            }
+            ProjectCommand::Clean(opts) => {
+                let cache = DetectCache::new(&paths);
+                apply::clean(&paths, &cache, &fmt, &opts)
             }
         },
         // Handled in fast path above.

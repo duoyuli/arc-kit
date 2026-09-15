@@ -7,7 +7,7 @@ use arc_core::status::{
 
 // ── Schema version ────────────────────────────────────────
 // Bump when a breaking change is made to any JSON schema.
-pub const SCHEMA_VERSION: &str = "5";
+pub const SCHEMA_VERSION: &str = "6";
 
 // ── status ────────────────────────────────────────────────
 
@@ -18,6 +18,7 @@ pub struct StatusOutput {
     pub agents: Vec<AgentRuntimeStatus>,
     pub catalog: CatalogStatus,
     pub actions: Vec<RecommendedAction>,
+    pub tracking: arc_core::skill::install::InstallTrackingStatus,
 }
 
 // ── skill list ────────────────────────────────────────────
@@ -25,7 +26,9 @@ pub struct StatusOutput {
 #[derive(Serialize)]
 pub struct SkillListOutput {
     pub schema_version: &'static str,
+    pub scope: &'static str,
     pub skills: Vec<SkillItem>,
+    pub installations: Vec<arc_core::skill::install::InstallRecord>,
 }
 
 #[derive(Serialize)]
@@ -41,11 +44,13 @@ pub struct SkillItem {
 #[derive(Serialize)]
 pub struct SkillInfoOutput {
     pub schema_version: &'static str,
+    pub scope: &'static str,
     pub name: String,
     pub origin: String,
     pub summary: String,
     pub installed_targets: Vec<String>,
     pub source_path: String,
+    pub installations: Vec<arc_core::skill::install::InstallRecord>,
 }
 
 // ── provider list ─────────────────────────────────────────
@@ -153,6 +158,7 @@ mod tests {
     fn status_output_serializes_correctly() {
         let out = StatusOutput {
             schema_version: SCHEMA_VERSION,
+            tracking: Default::default(),
             project: ProjectStatusSection {
                 state: ProjectState::None,
                 name: "workspace".to_string(),
@@ -163,6 +169,7 @@ mod tests {
                 skills: vec![],
                 agents: vec![],
                 provider: None,
+                installations: None,
             },
             agents: vec![AgentRuntimeStatus {
                 id: "claude".to_string(),
@@ -195,6 +202,7 @@ mod tests {
     fn status_output_with_project() {
         let out = StatusOutput {
             schema_version: SCHEMA_VERSION,
+            tracking: Default::default(),
             agents: vec![],
             catalog: CatalogStatus {
                 market_count: 0,
@@ -215,6 +223,7 @@ mod tests {
                     missing_skills: 0,
                     unavailable_skills: 0,
                     target_agents: 1,
+                    attention_skills: 0,
                 }),
                 skills: vec![ProjectSkillRollout {
                     name: "arch-review".to_string(),
@@ -234,6 +243,7 @@ mod tests {
                         state: ProviderMatchState::Matched,
                     }],
                 }),
+                installations: None,
             },
             actions: vec![RecommendedAction {
                 severity: ActionSeverity::Info,
@@ -251,6 +261,8 @@ mod tests {
     fn skill_list_output_serializes_correctly() {
         let out = SkillListOutput {
             schema_version: SCHEMA_VERSION,
+            scope: "global",
+            installations: vec![],
             skills: vec![SkillItem {
                 name: "arch-review".to_string(),
                 origin: "market".to_string(),

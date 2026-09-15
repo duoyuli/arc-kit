@@ -17,8 +17,10 @@ fn cleanup_removes_tracked_global_install_when_skill_not_in_registry() {
     fs::create_dir_all(claude_root.join("skills")).unwrap();
 
     let orphan = claude_root.join("skills").join("gone-skill");
-    fs::create_dir_all(&orphan).unwrap();
-    fs::write(orphan.join("SKILL.md"), "# gone\n").unwrap();
+    let source = temp.path().join("gone-source");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "# gone\n").unwrap();
+    std::os::unix::fs::symlink(&source, &orphan).unwrap();
 
     let agents = BTreeMap::from([(
         "claude".to_string(),
@@ -32,7 +34,8 @@ fn cleanup_removes_tracked_global_install_when_skill_not_in_registry() {
     )]);
     let cache = DetectCache::from_map(agents);
     let registry = SkillRegistry::new(paths.clone(), cache);
-    track_global_skill_install(&paths, "claude", "gone-skill", &orphan).unwrap();
+    track_global_skill_install(&paths, "claude", "gone-skill", &source).unwrap();
+    fs::remove_dir_all(source).unwrap();
     assert!(paths.skill_tracking_file().is_file());
     assert!(
         !claude_root
@@ -42,7 +45,7 @@ fn cleanup_removes_tracked_global_install_when_skill_not_in_registry() {
     );
     let report = registry.cleanup_removed_global_skills().unwrap();
     assert_eq!(report.removed, 1);
-    assert!(!orphan.exists());
+    assert!(!orphan.is_symlink());
 }
 
 #[test]
@@ -99,7 +102,7 @@ fn sync_only_counts_actual_copy_changes() {
     )]);
     let cache = DetectCache::from_map(agents.clone());
     let registry = SkillRegistry::new(paths.clone(), cache.clone());
-    let engine = InstallEngine::new(cache.clone());
+    let engine = InstallEngine::with_paths(paths.clone(), cache.clone());
     let skill = registry.find("copy-skill").expect("local skill");
     let src = registry.resolve_source_path(&skill).unwrap();
     engine

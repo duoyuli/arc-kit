@@ -43,6 +43,38 @@ pub(super) fn collect_actions(
                     });
                 }
             }
+            if let Some(installs) = &project.installations {
+                use crate::skill::install::{InstallAction, InstallStatus};
+                if installs
+                    .items
+                    .iter()
+                    .any(|item| item.status == InstallStatus::Unmanaged)
+                {
+                    actions.push(RecommendedAction {
+                        severity: ActionSeverity::Warn,
+                        message: "Required project targets are unmanaged; review them before explicit adoption.".to_string(),
+                        command: Some("arc project apply --adopt-existing --all-agents --dry-run".to_string()),
+                    });
+                } else if !installs.ok() {
+                    actions.push(RecommendedAction {
+                        severity: ActionSeverity::Warn,
+                        message: "Project installation tracking needs attention; inspect the reported paths and errors.".to_string(),
+                        command: Some("arc status --format json".to_string()),
+                    });
+                } else if installs.items.iter().any(|item| {
+                    matches!(
+                        item.action,
+                        InstallAction::Refresh | InstallAction::Remove | InstallAction::Forget
+                    )
+                }) {
+                    actions.push(RecommendedAction {
+                        severity: ActionSeverity::Info,
+                        message: "Reconcile the recorded project installations with arc.toml."
+                            .to_string(),
+                        command: Some("arc project apply".to_string()),
+                    });
+                }
+            }
             if let Some(provider) = &project.provider {
                 for agent in &provider.agents {
                     match agent.state {

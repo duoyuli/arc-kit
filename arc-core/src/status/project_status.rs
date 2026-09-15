@@ -20,6 +20,7 @@ pub(super) fn collect_project(
             skills: Vec::new(),
             agents: Vec::new(),
             provider: None,
+            installations: None,
         };
     };
 
@@ -37,83 +38,121 @@ pub(super) fn collect_project(
                 skills: Vec::new(),
                 agents: Vec::new(),
                 provider: None,
+                installations: None,
             };
         }
     };
 
-    let registry = SkillRegistry::new(paths.clone(), cache.clone());
-    let target_agents: Vec<&AgentRuntimeStatus> = agents
+    let root_ref = root.as_deref().expect("project configuration has a parent");
+    let recorded =
+        crate::project::skills::recorded_project_agents(paths, root_ref).unwrap_or_default();
+    let options = crate::project::skills::ProjectSkillOptions {
+        dry_run: true,
+        all_agents: recorded.is_empty(),
+        ..Default::default()
+    };
+    let installations = crate::project::skills::reconcile_project_skills(
+        paths,
+        cache,
+        root_ref,
+        &config.skills.require,
+        &options,
+        false,
+        &[],
+    );
+    use crate::skill::install::{InstallAction, InstallStatus};
+    let target_ids: std::collections::BTreeSet<_> = installations
+        .items
         .iter()
-        .filter(|agent| agent.supports_project_skills)
+        .map(|item| item.agent.clone())
+        .filter(|name| !name.is_empty())
         .collect();
-
     let skills: Vec<ProjectSkillRollout> = config
         .skills
         .require
         .iter()
-        .map(|skill_name| {
-            if registry.find(skill_name).is_none() {
-                return ProjectSkillRollout {
-                    name: skill_name.clone(),
-                    state: ProjectSkillState::Unavailable,
-                    ready_on_agents: Vec::new(),
-                    missing_on_agents: target_agents.iter().map(|agent| agent.id.clone()).collect(),
-                };
-            }
-
-            let mut ready_on_agents = Vec::new();
-            let mut missing_on_agents = Vec::new();
-            if let Some(project_root) = root.as_deref() {
-                for agent in &target_agents {
-                    let present = project_skill_path(project_root, &agent.id, skill_name)
-                        .map(|path| path.exists())
-                        .unwrap_or(false);
-                    if present {
-                        ready_on_agents.push(agent.id.clone());
-                    } else {
-                        missing_on_agents.push(agent.id.clone());
-                    }
-                }
-            }
-
-            let state = if ready_on_agents.is_empty() {
-                ProjectSkillState::Missing
-            } else if missing_on_agents.is_empty() {
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|name| {
+            let relevant: Vec<_> = installations
+                .items
+                .iter()
+                .filter(|item| {
+                    item.skill == *name
+                        && !matches!(item.action, InstallAction::Remove | InstallAction::Forget)
+                })
+                .collect();
+            let ready_on_agents: Vec<_> = relevant
+                .iter()
+                .filter(|item| item.status == InstallStatus::Kept)
+                .map(|item| item.agent.clone())
+                .collect();
+            let missing_on_agents: Vec<_> = target_ids
+                .iter()
+                .filter(|agent| !ready_on_agents.contains(agent))
+                .cloned()
+                .collect();
+            let state = if !installations.errors.is_empty() {
+                ProjectSkillState::Conflict
+            } else if relevant
+                .iter()
+                .any(|item| item.status == InstallStatus::Unmanaged)
+            {
+                ProjectSkillState::Unmanaged
+            } else if relevant.iter().any(|item| {
+                item.status == InstallStatus::Unavailable
+                    || (item.status == InstallStatus::Unresolved
+                        && item.action == InstallAction::Inspect
+                        && item.source_path.is_none())
+            }) {
+                ProjectSkillState::Unavailable
+            } else if relevant.iter().any(|item| {
+                matches!(
+                    item.status,
+                    InstallStatus::Conflict
+                        | InstallStatus::Unresolved
+                        | InstallStatus::Failed
+                        | InstallStatus::CleanupPending
+                )
+            }) {
+                ProjectSkillState::Conflict
+            } else if relevant
+                .iter()
+                .any(|item| item.action == InstallAction::Refresh)
+            {
+                ProjectSkillState::Outdated
+            } else if !ready_on_agents.is_empty() && missing_on_agents.is_empty() {
                 ProjectSkillState::Ready
-            } else {
+            } else if !ready_on_agents.is_empty() {
                 ProjectSkillState::Partial
+            } else {
+                ProjectSkillState::Missing
             };
-
             ProjectSkillRollout {
-                name: skill_name.clone(),
+                name: name.clone(),
                 state,
                 ready_on_agents,
                 missing_on_agents,
             }
         })
         .collect();
-
     let total_available_skills = skills
         .iter()
         .filter(|skill| !matches!(skill.state, ProjectSkillState::Unavailable))
         .count();
-    let project_agents: Vec<ProjectTargetStatus> = target_agents
+    let project_agents: Vec<ProjectTargetStatus> = target_ids
         .iter()
-        .map(|agent| {
-            let ready_skill_count = skills
+        .map(|agent| ProjectTargetStatus {
+            id: agent.clone(),
+            name: agent_spec(agent)
+                .map(|spec| spec.display_name.to_string())
+                .unwrap_or_else(|| agent.clone()),
+            ready_skill_count: skills
                 .iter()
-                .filter(|skill| {
-                    !matches!(skill.state, ProjectSkillState::Unavailable)
-                        && skill.ready_on_agents.iter().any(|id| id == &agent.id)
-                })
-                .count();
-            ProjectTargetStatus {
-                id: agent.id.clone(),
-                name: agent.name.clone(),
-                ready_skill_count,
-                total_available_skill_count: total_available_skills,
-                provider_status: None,
-            }
+                .filter(|skill| skill.ready_on_agents.contains(agent))
+                .count(),
+            total_available_skill_count: total_available_skills,
+            provider_status: None,
         })
         .collect();
 
@@ -143,6 +182,17 @@ pub(super) fn collect_project(
             .filter(|skill| matches!(skill.state, ProjectSkillState::Unavailable))
             .count(),
         target_agents: project_agents.len(),
+        attention_skills: skills
+            .iter()
+            .filter(|skill| {
+                matches!(
+                    skill.state,
+                    ProjectSkillState::Unmanaged
+                        | ProjectSkillState::Conflict
+                        | ProjectSkillState::Outdated
+                )
+            })
+            .count(),
     };
 
     ProjectStatusSection {
@@ -155,6 +205,7 @@ pub(super) fn collect_project(
         skills,
         agents: project_agents,
         provider,
+        installations: Some(installations),
     }
 }
 

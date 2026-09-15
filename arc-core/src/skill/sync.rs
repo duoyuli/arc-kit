@@ -2,22 +2,18 @@
 //! the merged registry, then re-apply installs so remaining skills point at the latest resolved
 //! source (handles market layout changes without deleting the skill).
 
-use std::collections::{BTreeMap, HashSet};
-use std::fs;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use log::info;
 
-use crate::agent::agent_spec;
+use crate::agent::SkillInstallStrategy;
 use crate::detect::DetectCache;
 use crate::engine::InstallEngine;
 use crate::error::Result;
-use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
 use crate::skill::SkillRegistry;
-use crate::skill::tracking::{
-    fingerprint_path, global_skill_target_needs_sync, list_tracked_global_skill_installs,
-    track_global_skill_install, untrack_global_skill_install,
+use crate::skill::install::{
+    InstallOperation, InstallRecord, InstallScope, InstallStore, inspect_owned,
 };
 
 /// Report from removing global installs whose name is absent from the merged registry.
@@ -64,170 +60,133 @@ pub fn run_global_skill_maintenance(
 }
 
 impl SkillRegistry {
-    /// Remove `~/<agent>/…/skills/<name>` entries when `<name>` is not in the merged registry
-    /// (local > built-in > market). Skills that still exist are left for [`Self::sync_installed_global_skills`].
     pub fn cleanup_removed_global_skills(&self) -> Result<GlobalSkillCleanupReport> {
-        self.arc_paths()
-            .ensure_arc_home()
-            .map_err(|e: std::io::Error| crate::error::ArcError::new(e.to_string()))?;
-        let known: HashSet<String> = self.list_all().into_iter().map(|e| e.name).collect();
-        let mut removed = 0usize;
-
-        for install in list_tracked_global_skill_installs(self.arc_paths(), self.detect_cache())? {
-            if known.contains(&install.skill) {
-                continue;
-            }
-            if target_exists(&install.target_path) {
-                remove_skill_path(&install.target_path)?;
+        let known: HashSet<String> = self
+            .list_all()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        let mut store = InstallStore::open(self.arc_paths())?;
+        let agents: Vec<_> = store
+            .ledger
+            .in_scope(InstallScope::Global, None)
+            .map(|record| record.agent.clone())
+            .chain(
+                store
+                    .journals
+                    .iter()
+                    .filter(|journal| journal.context.scope == InstallScope::Global)
+                    .map(|journal| journal.context.agent.clone()),
+            )
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        store.recover(InstallScope::Global, None, &agents)?;
+        let records: Vec<_> = store
+            .ledger
+            .in_scope(InstallScope::Global, None)
+            .filter(|record| !known.contains(&record.skill))
+            .cloned()
+            .collect();
+        let mut removed = 0;
+        for record in records {
+            let present = inspect_owned(self.arc_paths(), &record)?;
+            let mut operation = InstallOperation::remove(record.clone());
+            operation.metadata_only = !present;
+            store.execute(operation)?;
+            if present {
                 removed += 1;
-                info!(
-                    "removed tracked global skill '{}' (no longer in registry) from {}",
-                    install.skill, install.agent
-                );
             }
-            untrack_global_skill_install(self.arc_paths(), &install.agent, &install.skill)?;
+            info!(
+                "removed tracked global skill '{}' from {}",
+                record.skill,
+                record.target_path.display()
+            );
         }
-
         Ok(GlobalSkillCleanupReport { removed })
     }
 
-    /// Re-apply each globally installed skill so symlinks / copies match [`Self::resolve_source_path`].
     pub fn sync_installed_global_skills(
         &self,
-        engine: &InstallEngine,
+        _engine: &InstallEngine,
     ) -> Result<InstalledSkillSyncReport> {
-        self.arc_paths()
-            .ensure_arc_home()
-            .map_err(|e: std::io::Error| crate::error::ArcError::new(e.to_string()))?;
-        let mut entries = self.list_all();
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        let entries_by_name: BTreeMap<String, crate::models::SkillEntry> = entries
+        let entries: BTreeMap<_, _> = self
+            .list_all()
             .into_iter()
             .map(|entry| (entry.name.clone(), entry))
             .collect();
-        let mut installs =
-            list_tracked_global_skill_installs(self.arc_paths(), self.detect_cache())?;
-        installs.sort_by(|a, b| (&a.skill, &a.agent).cmp(&(&b.skill, &b.agent)));
+        let mut store = InstallStore::open(self.arc_paths())?;
+        let agents: Vec<_> = store
+            .ledger
+            .in_scope(InstallScope::Global, None)
+            .map(|record| record.agent.clone())
+            .chain(
+                store
+                    .journals
+                    .iter()
+                    .filter(|journal| journal.context.scope == InstallScope::Global)
+                    .map(|journal| journal.context.agent.clone()),
+            )
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        store.recover(InstallScope::Global, None, &agents)?;
+        let installs: Vec<_> = store
+            .ledger
+            .in_scope(InstallScope::Global, None)
+            .cloned()
+            .collect();
         let mut report = InstalledSkillSyncReport::default();
-
         for install in installs {
-            let Some(skill) = entries_by_name.get(&install.skill) else {
+            let Some(skill) = entries.get(&install.skill) else {
                 continue;
             };
-            if !engine.is_agent_detected(&install.agent) {
-                continue;
-            }
-            let source_path = match self.resolve_source_path(skill) {
-                Ok(p) => p,
-                Err(e) => {
-                    report.failures.push(InstalledSkillSyncFailure {
-                        skill: install.skill.clone(),
-                        agent: Some(install.agent.clone()),
-                        message: e.message,
-                    });
-                    continue;
-                }
-            };
-            let desired_fingerprint = match fingerprint_path(&source_path) {
-                Ok(fingerprint) => fingerprint,
-                Err(e) => {
-                    report.failures.push(InstalledSkillSyncFailure {
-                        skill: install.skill.clone(),
-                        agent: Some(install.agent.clone()),
-                        message: e.message,
-                    });
-                    continue;
-                }
-            };
-            let Some(spec) = agent_spec(&install.agent) else {
-                continue;
-            };
-
-            let needs_sync = match global_skill_target_needs_sync(
-                &install.target_path,
-                spec.skill_install_strategy,
-                &source_path,
-                &desired_fingerprint,
-            ) {
-                Ok(needs_sync) => needs_sync,
-                Err(e) => {
-                    report.failures.push(InstalledSkillSyncFailure {
-                        skill: install.skill.clone(),
-                        agent: Some(install.agent.clone()),
-                        message: e.message,
-                    });
-                    continue;
-                }
-            };
-
-            if needs_sync {
-                match engine.install_named(
-                    &skill.name,
-                    &ResourceKind::Skill,
-                    &source_path,
-                    std::slice::from_ref(&install.agent),
-                ) {
-                    Ok(_) => {
-                        report.refreshed += 1;
-                        info!(
-                            "synced tracked global skill '{}' → {}",
-                            skill.name, install.agent
-                        );
-                    }
-                    Err(e) => {
-                        report.failures.push(InstalledSkillSyncFailure {
-                            skill: skill.name.clone(),
-                            agent: Some(install.agent.clone()),
-                            message: e.message,
-                        });
-                        continue;
-                    }
-                }
-            }
-
-            if needs_sync
-                || install.source_path != source_path
-                || install.source_fingerprint != desired_fingerprint
-            {
-                track_global_skill_install(
-                    self.arc_paths(),
+            let attempt = (|| -> Result<bool> {
+                let present = inspect_owned(self.arc_paths(), &install)?;
+                let source = self.resolve_source_path(skill)?;
+                let after = InstallRecord::new(
+                    InstallScope::Global,
+                    None,
                     &install.agent,
                     &install.skill,
-                    &source_path,
+                    &source,
+                    &install.target_path,
+                    install.strategy,
                 )?;
+                let needs_sync = !present
+                    || install.source_path != after.source_path
+                    || (install.strategy == SkillInstallStrategy::Copy
+                        && install.source_fingerprint != after.source_fingerprint);
+                if needs_sync {
+                    store.execute(InstallOperation::put(after, Some(install.clone()), false))?;
+                }
+                Ok(needs_sync)
+            })();
+            match attempt {
+                Ok(true) => report.refreshed += 1,
+                Ok(false) => {}
+                Err(err) => report.failures.push(InstalledSkillSyncFailure {
+                    skill: install.skill,
+                    agent: Some(install.agent),
+                    message: err.message,
+                }),
             }
         }
-
+        for legacy in &store.ledger.unresolved_legacy {
+            report.failures.push(InstalledSkillSyncFailure {
+                skill: legacy
+                    .get("skill")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                agent: legacy
+                    .get("agent")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                message: "legacy installation ownership is unresolved; target preserved"
+                    .to_string(),
+            });
+        }
         Ok(report)
     }
-}
-
-fn remove_skill_path(path: &Path) -> Result<()> {
-    if path.is_symlink() {
-        fs::remove_file(path).map_err(|e| {
-            crate::error::ArcError::new(format!(
-                "failed to remove stale skill symlink {}: {e}",
-                path.display()
-            ))
-        })?;
-    } else if path.is_file() {
-        fs::remove_file(path).map_err(|e| {
-            crate::error::ArcError::new(format!(
-                "failed to remove stale skill file {}: {e}",
-                path.display()
-            ))
-        })?;
-    } else {
-        fs::remove_dir_all(path).map_err(|e| {
-            crate::error::ArcError::new(format!(
-                "failed to remove stale skill directory {}: {e}",
-                path.display()
-            ))
-        })?;
-    }
-    Ok(())
-}
-
-fn target_exists(path: &Path) -> bool {
-    path.exists() || path.symlink_metadata().is_ok()
 }

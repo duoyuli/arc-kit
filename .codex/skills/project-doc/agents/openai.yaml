@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Doc · arc-kit"
+  short_description: "按 arc-kit 当前实现读取和同步双语说明，维护工程文档与代码锚点"
+  default_prompt: "使用 $project-doc 按 arc-kit 当前工作区核实并维护相关文档，先检查 docs/index.md，尚未建库时按仓库导航读取现有 README。"

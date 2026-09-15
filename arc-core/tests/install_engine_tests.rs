@@ -22,7 +22,10 @@ fn install_engine_with_agents(home: &Path, agents: &[(&str, &str)]) -> InstallEn
             )
         })
         .collect::<BTreeMap<_, _>>();
-    InstallEngine::new(DetectCache::from_map(detected))
+    InstallEngine::with_paths(
+        arc_core::paths::ArcPaths::with_user_home(home),
+        DetectCache::from_map(detected),
+    )
 }
 
 #[test]
@@ -50,6 +53,15 @@ fn install_engine_installs_claude_skill_as_symlink() {
 
     let target = claude_root.join("skills").join("skill-a");
     assert!(target.symlink_metadata().unwrap().file_type().is_symlink());
+    let state = arc_core::skill::install::inspect_install_ledger(
+        &arc_core::paths::ArcPaths::with_user_home(temp.path()),
+    )
+    .unwrap();
+    assert_eq!(state.installs.len(), 1);
+    assert_eq!(
+        state.installs[0].scope,
+        arc_core::skill::install::InstallScope::Global
+    );
 }
 
 #[test]
@@ -255,6 +267,34 @@ fn install_named_project_writes_under_repo() {
 
     let target = proj.join(".claude").join("skills").join("proj-skill");
     assert!(target.symlink_metadata().unwrap().file_type().is_symlink());
+    let state = arc_core::skill::install::inspect_install_ledger(
+        &arc_core::paths::ArcPaths::with_user_home(temp.path()),
+    )
+    .unwrap();
+    assert_eq!(
+        state.installs[0].scope,
+        arc_core::skill::install::InstallScope::Project
+    );
+    assert_eq!(
+        state.installs[0].project_root.as_ref(),
+        Some(&fs::canonicalize(proj).unwrap())
+    );
+}
+
+#[test]
+fn read_only_engine_cannot_create_untracked_installations() {
+    let temp = tempfile::tempdir().unwrap();
+    let engine = InstallEngine::new(DetectCache::from_map(BTreeMap::new()));
+    let error = engine
+        .install_named(
+            "demo",
+            &ResourceKind::Skill,
+            temp.path(),
+            &["codex".to_string()],
+        )
+        .unwrap_err();
+    assert!(error.message.contains("with_paths"));
+    assert!(!temp.path().join(".arc-cli").exists());
 }
 
 #[test]

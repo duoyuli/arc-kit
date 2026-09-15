@@ -22,6 +22,7 @@ pub fn run(paths: &ArcPaths, cache: &DetectCache, fmt: &OutputFormat) -> Result<
             agents: snapshot.agents,
             catalog: snapshot.catalog,
             actions: snapshot.actions,
+            tracking: snapshot.tracking,
         })?;
         return Ok(());
     }
@@ -38,6 +39,29 @@ fn render_text(snapshot: &StatusSnapshot) {
     render_catalog(snapshot);
     println!();
     render_actions(&snapshot.actions);
+    println!();
+    println!("Install tracking");
+    println!(
+        "  {} global · {} project · {} unresolved legacy · {} pending",
+        snapshot.tracking.global_installs,
+        snapshot.tracking.project_installs,
+        snapshot.tracking.unresolved_legacy.len(),
+        snapshot.tracking.pending_operations.len()
+    );
+    if let Some(error) = &snapshot.tracking.error {
+        println!("  error: {error}");
+    }
+    for pending in &snapshot.tracking.pending_operations {
+        println!(
+            "  recovery required: {} -> {}",
+            pending.skill,
+            pending
+                .target_path
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new("unknown"))
+                .display()
+        );
+    }
     println!();
 }
 
@@ -63,12 +87,13 @@ fn render_project(project: &arc_core::status::ProjectStatusSection) {
             }
             if let Some(summary) = &project.summary {
                 println!(
-                    "  skills: {} required · {} ready · {} partial · {} missing · {} unavailable",
+                    "  skills: {} required · {} ready · {} partial · {} missing · {} unavailable · {} need attention",
                     summary.required_skills,
                     summary.ready_skills,
                     summary.partial_skills,
                     summary.missing_skills,
                     summary.unavailable_skills,
+                    summary.attention_skills,
                 );
             }
             if let Some(provider) = &project.provider {
@@ -122,6 +147,9 @@ fn render_project(project: &arc_core::status::ProjectStatusSection) {
                 .is_some_and(|summary| summary.required_skills > 0)
             {
                 println!("  targets: no detected agent currently supports project-local skills");
+            }
+            if let Some(installations) = &project.installations {
+                crate::commands::common::render_install_report_text(installations);
             }
         }
     }

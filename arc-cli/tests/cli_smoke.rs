@@ -93,7 +93,7 @@ fn provider_test_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, output: {stdout}"));
-    assert_eq!(json["schema_version"], "5");
+    assert_eq!(json["schema_version"], "6");
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn provider_list_json_reports_active_flags_per_agent() {
 }
 
 #[test]
-fn status_auto_initializes() {
+fn status_does_not_initialize_state() {
     let temp = tempfile::tempdir().unwrap();
     let output = arc_cmd()
         .arg("status")
@@ -206,7 +206,7 @@ fn status_auto_initializes() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert!(temp.path().join(".arc-cli").exists());
+    assert!(!temp.path().join(".arc-cli").exists());
 }
 
 #[test]
@@ -350,6 +350,26 @@ fn skill_install_json_requires_name() {
 }
 
 #[test]
+fn skill_install_unknown_skill_in_empty_catalog_exits_with_failure() {
+    // 明确指定的技能不存在时，文本和 JSON 都不能误报安装成功。
+    for json in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut command = arc_cmd_with_home(temp.path());
+        command.args(["skill", "install", "missing"]);
+        if json {
+            command.args(["--format", "json"]);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("skill 'missing' not found"));
+        if json {
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["ok"], false);
+        }
+    }
+}
+
+#[test]
 fn skill_uninstall_json_requires_name() {
     let temp = tempfile::tempdir().unwrap();
     let output = arc_cmd_with_home(temp.path())
@@ -442,7 +462,7 @@ fn apply_json_output() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert_eq!(json["schema_version"], "5");
+    assert_eq!(json["schema_version"], "6");
 }
 
 #[test]

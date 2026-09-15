@@ -63,7 +63,7 @@ pub fn edit_arc_toml_interactive(
     let config_path = find_project_config(cwd).ok_or_else(|| {
         ArcError::with_hint(
             "No arc.toml found.".to_string(),
-            "Run `arc project apply` in this directory to create one.".to_string(),
+            "Create an arc.toml file in this directory, then run `arc project edit`.".to_string(),
         )
     })?;
 

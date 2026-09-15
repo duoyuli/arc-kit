@@ -1,14 +1,14 @@
 use std::path::Path;
 
+use super::skills::{ProjectSkillOptions, reconcile_project_skills};
 use crate::detect::DetectCache;
-use crate::engine::InstallEngine;
 use crate::error::{ArcError, Result};
 use crate::market::bootstrap::sync_market_source_resources;
 use crate::market::sources::MarketSourceRegistry;
-use crate::models::ResourceKind;
 use crate::paths::ArcPaths;
 use crate::provider::{apply_provider, load_providers_for_agent, supported_provider_agents};
 use crate::skill::SkillRegistry;
+use crate::skill::install::{InstallReport, InstallStatus};
 
 use super::{
     EffectiveConfig, ProjectConfig, find_project_config, load_project_config,
@@ -21,22 +21,25 @@ pub struct ProjectApplyPlan {
     pub effective: EffectiveConfig,
     pub provider_to_switch: Option<String>,
     pub market_events: Vec<ProjectMarketEvent>,
+    pub preparation_errors: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ProjectMarketEvent {
     pub source_id: String,
     pub url: String,
     pub status: ProjectMarketEventStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProjectMarketEventStatus {
     Added,
     Failed,
+    Planned,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ProjectProviderSwitch {
     pub name: String,
     pub agents: Vec<String>,
@@ -59,6 +62,7 @@ pub struct ProjectSkillApplyItem {
 pub struct ProjectApplyExecution {
     pub provider_switch: Option<ProjectProviderSwitch>,
     pub skill_results: Vec<ProjectSkillApplyItem>,
+    pub installs: InstallReport,
 }
 
 pub fn prepare_project_apply(
@@ -66,22 +70,58 @@ pub fn prepare_project_apply(
     cache: &DetectCache,
     cwd: &Path,
 ) -> Result<ProjectApplyPlan> {
-    let project_config = if let Some(config_path) = find_project_config(cwd) {
-        load_project_config(&config_path).ok()
-    } else {
-        None
-    };
+    prepare_project_apply_with_mode(paths, cache, cwd, false)
+}
 
-    let market_events = if let Some(cfg) = &project_config {
-        sync_project_markets(paths, cfg)?
+pub fn prepare_project_apply_with_mode(
+    paths: &ArcPaths,
+    cache: &DetectCache,
+    cwd: &Path,
+    dry_run: bool,
+) -> Result<ProjectApplyPlan> {
+    let config_path = find_project_config(cwd)
+        .ok_or_else(|| ArcError::new("No arc.toml found in current directory or its parents."))?;
+    let project_config = Some(load_project_config(&config_path)?);
+    let mut preparation_errors = Vec::new();
+    let market_events = if dry_run {
+        let registry = MarketSourceRegistry::new(paths.clone());
+        let sources = registry.load();
+        project_config
+            .as_ref()
+            .unwrap()
+            .markets
+            .iter()
+            .filter_map(|market| {
+                let source_id = registry.generate_slug(&market.url);
+                (!sources.contains_key(&source_id)).then(|| ProjectMarketEvent {
+                    source_id,
+                    url: market.url.clone(),
+                    status: ProjectMarketEventStatus::Planned,
+                })
+            })
+            .collect()
     } else {
-        Vec::new()
+        match sync_project_markets(paths, project_config.as_ref().unwrap()) {
+            Ok(events) => {
+                for event in &events {
+                    if event.status == ProjectMarketEventStatus::Failed {
+                        preparation_errors
+                            .push(format!("failed to prepare project market {}", event.url));
+                    }
+                }
+                events
+            }
+            Err(err) => {
+                preparation_errors.push(err.message);
+                Vec::new()
+            }
+        }
     };
 
     let registry = SkillRegistry::new(paths.clone(), cache.clone());
-    registry
-        .bootstrap_catalog()
-        .map_err(|err| err.with_exit_code(1))?;
+    if !dry_run && let Err(err) = registry.bootstrap_catalog() {
+        preparation_errors.push(err.message);
+    }
 
     let effective = resolve_effective_config(paths, cwd, cache, &registry)
         .map_err(|err| err.with_exit_code(1))?;
@@ -95,6 +135,7 @@ pub fn prepare_project_apply(
         effective,
         provider_to_switch,
         market_events,
+        preparation_errors,
     })
 }
 
@@ -104,30 +145,84 @@ pub fn execute_project_apply(
     plan: &ProjectApplyPlan,
     skill_targets: &[String],
 ) -> Result<ProjectApplyExecution> {
-    let provider_switch = match plan.provider_to_switch.as_deref() {
-        Some(provider_name) => Some(apply_provider_switch(paths, provider_name)?),
-        None => None,
-    };
+    execute_project_apply_with_options(
+        paths,
+        cache,
+        plan,
+        &ProjectSkillOptions {
+            agents: skill_targets.to_vec(),
+            ..Default::default()
+        },
+    )
+}
 
-    let registry = SkillRegistry::new(paths.clone(), cache.clone());
-    let skill_results = if plan.effective.missing_installable.is_empty() {
-        Vec::new()
+pub fn execute_project_apply_with_options(
+    paths: &ArcPaths,
+    cache: &DetectCache,
+    plan: &ProjectApplyPlan,
+    options: &ProjectSkillOptions,
+) -> Result<ProjectApplyExecution> {
+    let root = plan
+        .effective
+        .project_root
+        .as_ref()
+        .ok_or_else(|| ArcError::new("project root missing"))?;
+    let mut installs = reconcile_project_skills(
+        paths,
+        cache,
+        root,
+        &plan.effective.required_skills,
+        options,
+        false,
+        &plan.preparation_errors,
+    );
+    let provider_switch = if installs.ok() && !options.dry_run {
+        match plan
+            .provider_to_switch
+            .as_deref()
+            .map(|name| apply_provider_switch(paths, name))
+            .transpose()
+        {
+            Ok(provider) => provider,
+            Err(err) => {
+                installs
+                    .errors
+                    .push(format!("provider switch failed: {}", err.message));
+                None
+            }
+        }
     } else {
-        let project_root = plan.effective.project_root.as_ref().ok_or_else(|| {
-            ArcError::new("internal error: arc.toml present but project root missing")
-        })?;
-        apply_project_skills(
-            cache,
-            &registry,
-            &plan.effective,
-            project_root,
-            skill_targets,
-        )?
+        None
     };
+    let skill_results = installs
+        .items
+        .iter()
+        .filter_map(|item| {
+            let status = match item.status {
+                InstallStatus::Installed | InstallStatus::Refreshed | InstallStatus::Adopted => {
+                    ProjectSkillApplyStatus::Installed {
+                        agents: vec![item.agent.clone()],
+                    }
+                }
+                status if status.is_issue() => ProjectSkillApplyStatus::Failed {
+                    message: item
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| format!("{:?}", item.status)),
+                },
+                _ => return None,
+            };
+            Some(ProjectSkillApplyItem {
+                name: item.skill.clone(),
+                status,
+            })
+        })
+        .collect();
 
     Ok(ProjectApplyExecution {
         provider_switch,
         skill_results,
+        installs,
     })
 }
 
@@ -184,69 +279,10 @@ fn apply_provider_switch(paths: &ArcPaths, provider_name: &str) -> Result<Projec
     })
 }
 
-fn apply_project_skills(
-    cache: &DetectCache,
-    registry: &SkillRegistry,
-    effective: &EffectiveConfig,
-    project_root: &Path,
-    skill_targets: &[String],
-) -> Result<Vec<ProjectSkillApplyItem>> {
-    if effective.missing_installable.is_empty() {
-        return Ok(Vec::new());
-    }
-    if skill_targets.is_empty() {
-        return Err(ArcError::new(
-            "project skill targets are required when skills need installation",
-        ));
-    }
-
-    let engine = InstallEngine::new(cache.clone());
-    let mut results = Vec::new();
-    for name in &effective.missing_installable {
-        let Some(skill) = registry.find(name) else {
-            results.push(ProjectSkillApplyItem {
-                name: name.clone(),
-                status: ProjectSkillApplyStatus::NotFound,
-            });
-            continue;
-        };
-        let source_path = match registry.resolve_source_path(&skill) {
-            Ok(path) => path,
-            Err(err) => {
-                results.push(ProjectSkillApplyItem {
-                    name: name.clone(),
-                    status: ProjectSkillApplyStatus::Failed {
-                        message: err.message,
-                    },
-                });
-                continue;
-            }
-        };
-        match engine.install_named_project(
-            name,
-            &ResourceKind::Skill,
-            &source_path,
-            project_root,
-            skill_targets,
-        ) {
-            Ok(agents) => results.push(ProjectSkillApplyItem {
-                name: name.clone(),
-                status: ProjectSkillApplyStatus::Installed { agents },
-            }),
-            Err(err) => results.push(ProjectSkillApplyItem {
-                name: name.clone(),
-                status: ProjectSkillApplyStatus::Failed {
-                    message: err.message,
-                },
-            }),
-        }
-    }
-    Ok(results)
-}
-
 impl ProjectApplyExecution {
     pub fn has_issues(&self, effective: &EffectiveConfig) -> bool {
-        !effective.missing_unavailable.is_empty()
+        !self.installs.ok()
+            || !effective.missing_unavailable.is_empty()
             || self.skill_results.iter().any(|item| {
                 matches!(
                     item.status,

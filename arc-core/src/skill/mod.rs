@@ -1,4 +1,5 @@
 pub mod builtin;
+pub mod install;
 pub mod local;
 pub mod merge;
 pub mod registry;

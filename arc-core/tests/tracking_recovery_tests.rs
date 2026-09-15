@@ -41,17 +41,17 @@ fn find_corrupt_tracking_file(paths: &ArcPaths) -> PathBuf {
 }
 
 #[test]
-fn list_tracked_global_skill_installs_quarantines_corrupt_file() {
+fn list_tracked_global_skill_installs_reports_corruption_without_writes() {
     let temp = tempfile::tempdir().unwrap();
     let paths = ArcPaths::with_user_home(temp.path());
     write_corrupt_tracking_file(&paths);
 
-    let installs = list_tracked_global_skill_installs(&paths, &empty_cache()).unwrap();
-
-    assert!(installs.is_empty());
-    assert!(!paths.skill_tracking_file().exists());
-    let quarantined = find_corrupt_tracking_file(&paths);
-    assert_eq!(fs::read_to_string(quarantined).unwrap(), "{not valid json");
+    assert!(list_tracked_global_skill_installs(&paths, &empty_cache()).is_err());
+    assert_eq!(
+        fs::read_to_string(paths.skill_tracking_file()).unwrap(),
+        "{not valid json"
+    );
+    assert!(!paths.state_dir().join("skills/installs.lock").exists());
 }
 
 #[test]
@@ -63,6 +63,9 @@ fn track_global_skill_install_recovers_from_corrupt_file() {
     let source = temp.path().join("source").join("demo");
     fs::create_dir_all(&source).unwrap();
     fs::write(source.join("SKILL.md"), "# demo\n").unwrap();
+    let target = temp.path().join(".claude/skills/demo");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&source, &target).unwrap();
 
     track_global_skill_install(&paths, "claude", "demo", &source).unwrap();
 

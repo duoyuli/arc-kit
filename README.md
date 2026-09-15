@@ -47,7 +47,9 @@ Skill sources are resolved by priority:
 | --- | --- | --- |
 | local | `~/.arc-cli/skills/<name>/` | user-defined skills |
 | market | remote git repositories | team or community shared skills |
-| built-in | embedded in the binary | skills shipped with arc-kit |
+| built-in | embedded in the binary | optional skills packaged from `built-in/skill/` |
+
+The built-in source mechanism is retained, but the current source tree bundles no skills. Non-interactive `skill install` requires a skill name even when no skills are available. Installing a skill that cannot be found exits with code `1`; JSON mode also reports the failure.
 
 ### Market Sync
 
@@ -115,7 +117,8 @@ arc skill list          # List skills
 arc skill install       # Install a skill
 arc skill uninstall     # Uninstall a skill
 arc skill info          # Show skill details
-arc project apply       # Apply arc.toml configuration
+arc project apply       # Reconcile tracked project skills with arc.toml
+arc project clean       # Remove tracked project skills, keeping arc.toml
 arc project edit        # Edit arc.toml skills interactively
 ```
 
@@ -154,7 +157,7 @@ arc project apply
 arc status
 ```
 
-If the current repository has no `arc.toml`, interactive `arc project apply` opens the project skill editor so you can create one.
+Create an `arc.toml` before running `arc project apply`. Missing or invalid project configuration exits with `1` in both text and JSON modes.
 
 ### Interaction Modes
 
@@ -191,6 +194,7 @@ JSON output contains these top-level modules:
 - `agents`
 - `catalog`
 - `actions`
+- `tracking`: global/project record counts, unresolved legacy records, pending operations, and metadata errors
 
 ### Providers
 
@@ -359,7 +363,33 @@ Tracking metadata is stored at:
 ~/.arc-cli/state/skills/installs.json
 ```
 
-If tracking metadata is corrupted, arc quarantines it as `installs.corrupt.<unix_ts>.json` and continues from empty tracking state.
+The v2 ledger records each actual destination independently. Global installs and multiple projects may use the same skill without replacing each other's records:
+
+```json
+{
+  "schema_version": 2,
+  "installs": [
+    {
+      "scope": "project",
+      "project_root": "/Users/alice/work/project-a",
+      "agent": "codex",
+      "skill": "team-review",
+      "target_path": "/Users/alice/work/project-a/.codex/skills/team-review",
+      "source_path": "/Users/alice/.arc-cli/skills/team-review",
+      "strategy": "symlink",
+      "source_fingerprint": "sha256:6cd3e861cdd33b9b276fd2a03fe253ad5674664d2a2911cb7944625fbff3b4f3",
+      "target_fingerprint": null
+    }
+  ],
+  "unresolved_legacy": []
+}
+```
+
+`target_path` identifies the installed entry, not the source behind its symlink. Copy records also retain the installed copy's `target_fingerprint`. The shared install service commits each target separately under a process lock, with a journal and same-filesystem staging for recovery. A failed removal never discards its tracking record; a committed replacement is never rolled back merely because backup cleanup failed.
+
+Old global arrays are read without mutation. A write operation backs them up as `installs.v1.*.json` and migrates uniquely verified destinations without requiring agent detection. Unverified originals remain in `unresolved_legacy`. Read-only commands report corrupt metadata; write operations can quarantine it as `installs.corrupt.*.json`. Existing targets are never automatically claimed after metadata loss, and unknown newer ledger versions are never overwritten.
+
+New fingerprints use SHA-256 with explicit field boundaries. Legacy copies with an older fingerprint also need to match the current source before migration; if the source has changed or is unavailable, the original record and copy remain unresolved. A missing or corrupt ledger alongside pending operations requires manual review: targets and journals are preserved, and committed installations are never guessed to be uncommitted and rolled back.
 
 ### Project Configuration
 
@@ -372,13 +402,26 @@ arc project apply
 arc project apply --agent codex
 arc project apply --all-agents
 arc project edit
+arc project apply --dry-run --agent codex --format json
+arc project apply --adopt-existing --agent codex
+arc project clean --agent codex
+arc project clean --project-root /path/to/project --dry-run --format json
 ```
 
 `arc project apply`:
 
 - connects markets declared in `arc.toml`;
 - switches to the required provider;
-- installs project-level skills for selected agents.
+- reconciles all required and tracked project skills for selected agents;
+- installs missing targets, refreshes changed sources, and removes unchanged arc-owned targets no longer required, including when the requirement list is empty.
+
+An existing untracked required target is reported as `unmanaged`. Use `--adopt-existing` to explicitly take ownership of targets that match the resolved source. Unrelated manual skills, replaced links, and modified copies are preserved. Unavailable required sources block new target changes rather than being treated as removed requirements. A preflight issue blocks the whole new skill plan; runtime failures stop subsequent actions while keeping completed targets recorded.
+
+`--agent` and `--all-agents` are mutually exclusive. Explicit agents constrain both installation and cleanup. Without a flag, previously tracked projects reuse agents from their records and pending operations. `--all-agents` combines that set with detected project-capable agents. Inspection, repair, adoption, refresh, and removal of recorded targets do not require a running/detected agent executable; creating a new unrecorded destination does.
+
+`project clean` removes owned project installations but leaves requirements intact, so apply can recreate them. Missing or inaccessible project roots retain their records. A moved project is a new scope: its existing targets require explicit adoption, and historical records remain available for inspection. Global `skill` commands and `market update` do not rewrite project target entries or remove project records. Updating a shared source can still change content reached through existing project symlinks.
+
+`--dry-run` reads local state without writing targets, logs, caches, lock files, migrations, or recovery data. Missing local source data, active writers, and pending recovery report `unresolved`/errors with exit `1`; a valid plan exits `0`, even when changes are planned. Normal scoped commands recover their pending operations before planning new actions. JSON and human output report the same per-target actions, paths, and conflicts. `arc status` is read-only and exposes this information under `project.installations`; global skill JSON identifies `scope: "global"` and exposes tracked global destinations.
 
 Minimal `arc.toml`:
 
@@ -473,7 +516,7 @@ This section defines command semantics for humans, scripts, and coding agents.
 
 ### JSON and Exit Codes
 
-JSON output uses a top-level `schema_version`. Current schema version: `"5"`.
+JSON output uses a top-level `schema_version`. Current schema version: `"6"`. The install ledger uses its own independent numeric schema version `2`.
 
 `arc status --format json` contains:
 
@@ -481,6 +524,7 @@ JSON output uses a top-level `schema_version`. Current schema version: `"5"`.
 - `agents`
 - `catalog`
 - `actions`
+- `tracking`
 
 Exit code conventions:
 
@@ -493,7 +537,7 @@ Exit code conventions:
 | `arc provider test` has failures | 1 |
 | JSON serialization failure | 1 |
 
-Write-command JSON can exit `0` with `ok == false` for expected non-mutating failures, such as a missing `arc.toml` in `arc project apply --format json`. Automation must inspect `ok` and `message`, not only the process exit code.
+Some commands retain structured non-mutating failures with exit `0` and `ok == false`, such as `arc project edit --format json`. Project apply/clean and scoped installation operations exit `1` on unresolved requirements, ownership conflicts, unavailable state, or execution failure. Automation should inspect both the exit code and JSON result.
 
 ### JSON Coverage
 
@@ -528,7 +572,8 @@ Current one-shot paths:
 | `skill install` / `skill uninstall` | explicit name plus target agent or `--all` where applicable |
 | `provider use` | explicit provider name, plus `--agent` when ambiguous |
 | `market add` / `market remove` / `market update` | fully parameterized by command arguments |
-| `project apply` | `--agent` or `--all-agents` when project skills need installation |
+| `project apply` | Explicit targets for a first install; later calls reuse recorded agents, including cleanup-only calls; `--dry-run` previews and `--adopt-existing` explicitly adopts matching required targets |
+| `project clean` | Current project, or `--project-root <path>` when the manifest is absent; optional agent filter and `--dry-run` |
 | `project edit` | interactive-only editor; JSON path returns a structured failure without opening an editor |
 
 ### Project Configuration Design
@@ -542,7 +587,7 @@ Current one-shot paths:
 
 `[mcps]` and `[subagents]` have been removed and are rejected as unknown fields.
 
-When `arc project apply` runs interactively without an `arc.toml`, it opens the project skill editor to create one. In non-interactive mode without `arc.toml`, plain text exits with `1`; JSON returns `WriteResult.ok == false` with exit code `0`.
+`arc project apply` requires a valid `arc.toml`; a missing or invalid file exits `1` in text and JSON modes. `project clean --project-root <path>` can clean an explicitly selected existing project directory after its manifest has been removed.
 
 ### UI Boundaries
 
@@ -578,7 +623,7 @@ When adding another resource family, evaluate the full `list / info / install / 
 
 ### Environment
 
-- Rust stable toolchain
+- Rust stable toolchain (Rust 1.89 or newer)
 - macOS target platform
 
 ```bash
@@ -625,11 +670,13 @@ The black-box CLI contract checks (exit codes, stderr text, JSON failure shapes)
 ├── arc-cli/          # CLI, clap command table, user output, JSON structs
 ├── arc-core/         # domain logic, install engine, provider, market, skill, detect, paths, io
 ├── arc-tui/          # interactive UI; only this crate depends on dialoguer
-├── built-in/         # built-in skills and market index
+├── built-in/         # market index and optional skill resources; no skills currently bundled
 └── Cargo.toml
 ```
 
 ### Module Ownership
+
+Built-in skill tests use dedicated fixtures in `arc-core/tests/fixtures/builtin_skills/`; those fixtures are not embedded in the released binary.
 
 - `arc-core`: business logic, state, filesystem operations, provider application, market sync, skill registry, install engine, detection, and project resolution.
 - `arc-cli`: command definitions, command dispatch, user output, and JSON response shapes.
@@ -647,7 +694,7 @@ Behavioral code changes must update the relevant README sections:
 - build, test, release, or module-ownership changes;
 - matching `README.zh-CN.md` Chinese mirror content.
 
-Code comments and CLI prompts are English. Official documentation is maintained in `README.md` and `README.zh-CN.md`.
+Code comments follow `AGENTS.md` and are written in Chinese; CLI prompts are English. Product usage and development guidance are maintained in `README.md` and `README.zh-CN.md`. Cross-module engineering documentation is managed through `project-doc`, with `docs/index.md` as its entry point once the library is established. The engineering library has not been created yet; establishing it must also update both READMEs with its scope and entry link.
 
 ### Contribution Rules
 
